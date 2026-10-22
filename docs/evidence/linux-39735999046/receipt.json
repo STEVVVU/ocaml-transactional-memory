@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "exit_code": 0,
+  "cleanup_complete": true,
+  "fixture": "8192 accounts; 1000 snapshots/domain; 3 warmups; 5 native runs; 5 alternating passes per source",
+  "baseline_source": "6ecf556be3102730b6eef054c09c2a02aa279809",
+  "candidate_source": "51c48e58bf36944ed4635975e61f82df09598e5e"
+}

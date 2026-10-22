@@ -33,6 +33,10 @@ The [native Ubuntu run](https://github.com/STEVVVU/ocaml-transactional-memory/ac
 
 The fixed-width integer API keeps the write and read logs typed without `Obj.magic`. User transaction functions can run again after conflicts, so they must not perform I/O or other external side effects. Only mutations staged through `Tl2.write` join a transaction. This implementation is a teaching experiment. It does not replace Kcas, provide a formal proof of TL2, or claim lock-free progress, fairness, allocator safety, or general OCaml data support.
 
+Read-only commits validate recorded immutable cell-state identities directly.
+Transactions with staged writes retain sorted lock acquisition, commit-version
+reservation, validation and publication.
+
 ## Workload comparison
 
 The benchmark runs disjoint, contended, and read-heavy bank operations through Kcas, TL2, and Mutex. It warms each workload, rotates backend order across five trials, keeps the operation schedule deterministic, and records each operation's latency plus summary counts using Mtime's monotonic OS clock. The CSV is evidence, not a speedup claim. Run it after creating an evidence directory:
@@ -77,8 +81,7 @@ avoidable read-set sorting before TL2's read-only validation. Exclusive sorting
 and comparator instructions account for 12.65% of its full diagnostic process,
 which also includes all backends, setup and final correctness checks. This is
 not a native wall-time percentage. Independent review approved a narrow
-read-only validation fast path; native validation and the matched rerun remain
-pending, so no improved performance result is claimed.
+read-only validation fast path, and the matched native run below passed.
 
 ```sh
 opam exec -- dune build --profile release coursework/bench/stm_framework.exe
@@ -94,7 +97,37 @@ source and frozen `6ecf556`, overlays that identical maintained fixture onto
 the archived baseline, and alternates five whole passes per build. It records
 source/fixture/binary hashes, resources and exit receipts. This is an explicit
 workload revision: the table above remains the original 100-snapshot baseline
-and cannot be compared directly with a future 1000-snapshot result.
+and cannot be compared directly with the 1000-snapshot results below.
+
+The [matched run 39735999046](https://github.com/STEVVVU/ocaml-transactional-memory/actions/runs/39735999046)
+compared frozen `6ecf556` against `51c48e5` on one Ubuntu 24.04/OCaml 5.3.0
+Release runner, an AMD EPYC 9V74 VM reporting four logical CPUs on two cores.
+Both builds used the identical 8192-account, 1000-snapshot fixture. Five
+alternating whole passes, each with three warmups and five native runs, gave
+aggregate TL2 snapshots/second (median of pass medians; full pass-median range):
+
+| Domains | Frozen TL2 | Direct read-only validation | Ratio |
+| ---: | ---: | ---: | ---: |
+| 1 | 378.2 (359.1..380.4) | 935.2 (926.8..938.0) | 2.47× |
+| 2 | 643.6 (629.3..663.8) | 1524.4 (1517.8..1535.4) | 2.37× |
+| 4 | 862.8 (851.1..875.1) | 1963.6 (1913.2..1993.4) | 2.28× |
+
+Both source suites passed, including stale/same-value read rejection and the
+existing concurrent history oracle. The native driver passed 5250 transfers;
+the separate short mixed campaign completed 315000 operations with zero errors.
+All ten matched processes and owned cleanup passed. Full-pass wall medians
+fell from 90.95 (90.13..91.89) to 42.93 (42.35..43.04) seconds, while peak RSS
+medians rose from 39396 (37272..43796) to 50104 (49120..50712) KiB. These
+resources include every backend, warmups, domain creation and measurement.
+
+All controls are retained: unchanged Mutex medians were about 9% lower at
+one/two domains, with no cause isolated; Kcas medians differed by 0.3..2.4%.
+The improvement claim is specific to TL2's checked read-only footprint.
+[All 180 native aggregate metrics, every control, resources, exact commands,
+receipts and raw hashes](docs/evidence/linux-39735999046/) are retained.
+The original longer mixed/latency/retry sweep remains incomplete until its
+separate matched-configuration rerun; this fixture does not establish fairness
+or transactional abort behavior.
 
 ## Coursework and research
 
