@@ -9,6 +9,13 @@ type backend = Kcas_backend | Tl2_backend | Mutex_backend
 let create backend initial =
   if Array.exists (fun balance -> balance < 0) initial then
     invalid_arg "Bank.create: balances must be non-negative";
+  ignore
+    (Array.fold_left
+       (fun total balance ->
+         if balance > max_int - total then
+           invalid_arg "Bank.create: total balance exceeds max_int";
+         total + balance)
+       0 initial);
   match backend with
   | Kcas_backend -> Kcas (Array.map Kcas.Loc.make initial)
   | Tl2_backend -> Tl2 (Array.map Tl2.create initial)

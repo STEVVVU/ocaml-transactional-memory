@@ -301,6 +301,13 @@ let test_other_backends () =
     [ Bank.Kcas_backend; Bank.Tl2_backend; Bank.Mutex_backend ];
   List.iter
     (fun backend ->
+      let overflow_rejected =
+        try
+          ignore (Bank.create backend [| max_int; 1 |]);
+          false
+        with Invalid_argument _ -> true
+      in
+      check overflow_rejected "initial total overflow must be rejected";
       let bank = Bank.create backend [| max_int; 0 |] in
       check (not (Bank.transfer bank 1 0 1)) "overflowing transfer must be rejected";
       check (Bank.snapshot bank = [| max_int; 0 |])
