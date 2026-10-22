@@ -32,9 +32,11 @@ jobs:
       - name: Run upstream and coursework tests
         run: opam exec -- dune runtest --display=short
       - name: Drive native transaction checks
+        shell: bash
         run: |
           opam exec -- dune exec coursework/bin/stm_verify.exe -- --doctor 2>&1 | tee .agents/runs/ci-${GITHUB_RUN_ID}/doctor.log
           opam exec -- dune exec coursework/bin/stm_verify.exe -- --evidence .agents/runs/ci-${GITHUB_RUN_ID} 2>&1 | tee .agents/runs/ci-${GITHUB_RUN_ID}/drive.log
+          python -c 'import json, os; d=json.load(open(".agents/runs/ci-"+os.environ["GITHUB_RUN_ID"]+"/verification.json")); assert d["passed"] is True and d["cleanup_complete"] is True'
       - name: Prove failed verdict survives
         shell: bash
         run: |
@@ -47,6 +49,13 @@ jobs:
             exit 1
           fi
           grep -F '"passed":false' .agents/runs/ci-failure-${GITHUB_RUN_ID}/verification.json
+          python - <<'PY'
+          import json, os
+          with open('.agents/runs/ci-failure-' + os.environ['GITHUB_RUN_ID'] + '/verification.json') as source:
+              result = json.load(source)
+          assert result['passed'] is False and result['cleanup_complete'] is True
+          assert result['details'] == 'Failure("deliberate verification failure")'
+          PY
       - name: Record interleaved native backend measurements
         run: opam exec -- dune exec --profile release coursework/bench/stm_bench.exe -- --output .agents/runs/ci-${GITHUB_RUN_ID}/bench.csv
       - name: Preserve native evidence
