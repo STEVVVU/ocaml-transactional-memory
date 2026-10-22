@@ -169,15 +169,14 @@ let attempt f = attempt_with_hooks f
 
 let transact ?(max_retries = 100) f =
   if max_retries < 1 then invalid_arg "TL2.transact: max_retries must be positive";
-  let rec retry remaining =
+  let rec retry remaining backoff =
     match attempt f with
     | Some result -> result
     | None ->
         Atomic.fetch_and_add retry_count 1 |> ignore;
         if remaining = 1 then raise (Retry_limit max_retries);
-        Thread.yield ();
-        retry (remaining - 1)
+        retry (remaining - 1) (Backoff.once backoff)
   in
-  retry max_retries
+  retry max_retries Backoff.default
 
 let retries () = Atomic.get retry_count
