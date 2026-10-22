@@ -125,8 +125,9 @@ one/two domains, with no cause isolated; Kcas medians differed by 0.3..2.4%.
 The improvement claim is specific to TL2's checked read-only footprint.
 [All 180 native aggregate metrics, every control, resources, exact commands,
 receipts and raw hashes](docs/evidence/linux-39735999046/) are retained.
-The original longer mixed/latency/retry sweep remains incomplete. Run
-39739124466 finished all 135 groups in each smaller tier and 132 of 135 in
+The original longer mixed/latency/retry sweep remains incomplete. The
+[failed rerun 39739124466](docs/evidence/linux-39739124466/) finished all 135
+trial summaries in each smaller tier and 132 of 135 in
 the large tier before its 900-second cap, with zero errors in completed rows.
 The final four completed large TL2 read-heavy trials each took 86.8–91.7
 seconds; their measured regions already consumed 807.6 seconds across the tier.
