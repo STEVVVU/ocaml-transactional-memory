@@ -4,6 +4,7 @@ type transaction
 exception Retry_limit of int
 exception Version_overflow
 exception Identity_overflow
+
 (** Raised if an identity allocation is too contended to finish in its bounded
     compare-and-set loop. Transactions retry this condition automatically. *)
 exception Identity_contention
@@ -13,7 +14,6 @@ val read : transaction -> cell -> int
 val write : transaction -> cell -> int -> unit
 val attempt : (transaction -> 'a) -> 'a option
 module Testing : sig
-  (** Test hooks run during commit while its write locks remain held. *)
   (** [after_lock] runs after each write lock is acquired. *)
   val attempt_with_lock_hook :
     after_lock:(int -> unit) -> (transaction -> 'a) -> 'a option
