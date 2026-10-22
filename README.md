@@ -125,15 +125,53 @@ one/two domains, with no cause isolated; Kcas medians differed by 0.3..2.4%.
 The improvement claim is specific to TL2's checked read-only footprint.
 [All 180 native aggregate metrics, every control, resources, exact commands,
 receipts and raw hashes](docs/evidence/linux-39735999046/) are retained.
-The original longer mixed/latency/retry sweep remains incomplete. The
+The earlier longer mixed/latency/retry sweep was incomplete. The
 [failed rerun 39739124466](docs/evidence/linux-39739124466/) finished all 135
 trial summaries in each smaller tier and 132 of 135 in
 the large tier before its 900-second cap, with zero errors in completed rows.
 The final four completed large TL2 read-heavy trials each took 86.8–91.7
 seconds; their measured regions already consumed 807.6 seconds across the tier.
 The unchanged workload now has a 1200-second tier cap, with GNU time outside
-the timeout so failed runs also retain resource costs. This fixture does not
-establish fairness or transactional abort behavior.
+the timeout so failed runs also retain resource costs.
+
+The unchanged full matrix then completed in [run 39741981142](https://github.com/STEVVVU/ocaml-transactional-memory/actions/runs/39741981142)
+at `995cb12`, Ubuntu 24.04/OCaml 5.3.0 Release, AMD EPYC 7763 VM (four logical
+CPUs/two cores). All 405 trial summaries form 81 complete five-trial groups:
+18900000 measured successes, zero reported errors, and 189000 stride-100 raw
+latencies. Native tests/history checks, positive/negative driver receipts and
+owned-domain cleanup passed. The maintained validator's complete summary was
+independently reproduced. Reproduce through the same helper:
+
+```sh
+bash coursework/scripts/verify.sh --metrics fresh-long-mixed
+```
+
+At 8192 shared accounts, read-heavy aggregate operations/second are medians
+with the full range of five trials:
+
+| Domains | Kcas | TL2 | Mutex |
+| ---: | ---: | ---: | ---: |
+| 1 | 4930 (4909..4993) | 750 (745..775) | 25463 (25025..26139) |
+| 2 | 8639 (8577..8730) | 1185 (1174..1204) | 26597 (25616..27073) |
+| 4 | 4714 (4706..4763) | 1009 (995..1021) | 21436 (21143..22030) |
+
+All three slow at four domains versus two in this mixed workload. TL2 remains
+slower than both controls. Its four-domain p99 is 14.280 (13.874..14.468) ms,
+retry events 21651 (21490..21782), and allocations 11.823 (11.804..11.839)
+billion words per trial. The per-transaction 100-attempt limit is unchanged;
+zero errors includes no reported exhaustion. The large tier took 926.80 wall
+seconds, 2456.61 CPU seconds and 65968 KiB peak RSS, including every backend,
+warmups, domain creation and output. The smaller tiers took 4.14/9.31 seconds
+and 26896/28520 KiB peak RSS. These are whole-tier resource receipts.
+
+[Every cell and original trial, full p50/p95/p99 and retry ranges,
+resource/cleanup receipts, environment, exact commands and raw/source hashes](docs/evidence/linux-39741981142/)
+are retained. 68 groups contain a trial below 0.1 seconds and remain flagged;
+no throughput claim rests on these short rows. Summary quantiles use all
+operations, while raw latency data retain every 100th operation. Kcas aborts,
+per-operation retry maxima and fairness are unmeasured. This run's host differs
+from the failed sweep and the controlled read-only pair: completing a larger
+timeout budget is coverage, not a runtime gain or a causal cross-host comparison.
 
 ## Coursework and research
 

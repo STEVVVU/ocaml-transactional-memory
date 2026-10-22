@@ -34,6 +34,22 @@ Process CPU/RSS comes from `/usr/bin/time -v`; a separate unreported strace run
 captures synchronization/system-call behavior. Neither measures fairness or
 cache/NUMA effects. Retry limits, backend semantics and tests are unchanged.
 
+GNU time now wraps `timeout 1200` separately for each account-pair tier and
+writes `metrics-<pairs>.resources.txt`, retaining whole-tier CPU/RSS/wall/exit
+even when timeout fails. This changes the execution budget and resource
+capture only. The prior 900-second false-124 receipt remains retained at
+`docs/evidence/linux-39739124466/`; its incomplete groups were rejected.
+Native run 39741981142 completed the same matrix at 995cb12: 405 summaries,
+81 complete five-trial groups, 18900000 successes/zero errors, 189000 retained
+stride-100 latencies. The maintained summary reproduced exactly. All trials,
+medians/full ranges, resources and hashes are in `docs/evidence/linux-39741981142/`.
+68 groups contain short trials; do not turn these into throughput claims.
+Full quantiles use all samples and cannot be reconstructed from stride-100
+raw latencies. All three backends slow at four domains versus two in the
+large shared read-heavy workload; TL2 still has substantial retry/allocation/
+tail costs. The run establishes bounded mixed coverage, not a before/after
+gain across hosts.
+
 Both `--metrics` and `--profile` initialize `metrics-result.json` as false and
 install an EXIT receipt before starting native commands. A nonzero timeout,
 driver, benchmark, validation or profiler exit retains a false metrics verdict.

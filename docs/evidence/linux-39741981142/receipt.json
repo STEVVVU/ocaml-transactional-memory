@@ -1,0 +1,67 @@
+{
+  "run_id": 39741981142,
+  "source": "995cb12f753e82b0a1eedb1ef8649487f2158e76",
+  "artifact_id": 12411315153,
+  "artifact_zip_bytes": 1109286,
+  "metrics": {
+    "mode": "metrics",
+    "passed": true,
+    "exit_code": 0,
+    "functional_receipt_is_not_metrics": true
+  },
+  "functional": {
+    "passed": true,
+    "cleanup_complete": true,
+    "ocaml_version": "5.3.0",
+    "details": "completed 5250 successful transfers across 1, 2, and 4 domains with Kcas, TL2, and Mutex"
+  },
+  "positive": {
+    "passed": true,
+    "cleanup_complete": true,
+    "ocaml_version": "5.3.0",
+    "details": "completed 5250 successful transfers across 1, 2, and 4 domains with Kcas, TL2, and Mutex"
+  },
+  "negative": {
+    "passed": false,
+    "cleanup_complete": true,
+    "ocaml_version": "5.3.0",
+    "details": "Failure(\"deliberate verification failure\")"
+  },
+  "summary_trials": 405,
+  "complete_groups": 81,
+  "trials_per_group": 5,
+  "operations": 18900000,
+  "successes": 18900000,
+  "errors": 0,
+  "latency_samples": 189000,
+  "latency_stride": 100,
+  "short_groups": 68,
+  "tl2_retry_events": 378519,
+  "maintained_summary_reproduced_exactly": true,
+  "short_benchmark": {
+    "summaries": 135,
+    "operations": 315000,
+    "latencies": 315000,
+    "errors": 0
+  },
+  "separate_strace": {
+    "summaries": 135,
+    "operations": 1575000,
+    "latencies": 15750,
+    "errors": 0,
+    "excluded_from_native_comparison": true
+  },
+  "raw_hashes": 27,
+  "source_hashes": 7,
+  "runtime_workload_unchanged_from": "51c48e58bf36944ed4635975e61f82df09598e5e",
+  "retry_limit_per_transaction": 100,
+  "binary_sha256": null,
+  "limitations": [
+    "No executable hash captured by existing full mixed-sweep driver",
+    "Full quantiles use all in-memory operation samples; stride100 raw data cannot independently reconstruct them",
+    "Per-operation retry maximum and Kcas aborts are not recorded",
+    "Cleanup receipt covers driver-owned domains/resources, not deletion of retained evidence",
+    "Different hosts prevent causal timing comparisons with older full sweeps",
+    "No fairness, starvation, transactional abort classification or NUMA claim"
+  ]
+}

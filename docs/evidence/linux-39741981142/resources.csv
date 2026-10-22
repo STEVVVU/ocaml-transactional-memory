@@ -1,0 +1,4 @@
+pairs,wall,user_s,system_s,max_rss_kib,exit_code,command
+1,0:04.14,6.28,1.11,26896,0,"""timeout 1200 _build/default/coursework/bench/stm_bench.exe --output .agents/runs/metrics-39741981142/metrics-1.csv --operations 20000 --pairs 1 --domains 1,2,4 --warmup 1000 --latency-stride 100"""
+64,0:09.31,19.61,1.31,28520,0,"""timeout 1200 _build/default/coursework/bench/stm_bench.exe --output .agents/runs/metrics-39741981142/metrics-64.csv --operations 20000 --pairs 64 --domains 1,2,4 --warmup 1000 --latency-stride 100"""
+4096,15:26.80,2438.23,18.38,65968,0,"""timeout 1200 _build/default/coursework/bench/stm_bench.exe --output .agents/runs/metrics-39741981142/metrics-4096.csv --operations 20000 --pairs 4096 --domains 1,2,4 --warmup 1000 --latency-stride 100"""
