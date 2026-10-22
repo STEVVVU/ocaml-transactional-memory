@@ -198,11 +198,11 @@ let test_prepublication_failure_is_atomic () =
   let low = Tl2.create 0 and high = Tl2.create 0 in
   let failed =
     try
-      Tl2.Testing.attempt_with_publish_hook
+      ignore (Tl2.Testing.attempt_with_publish_hook
         ~before_publish:(fun () -> raise Exit)
         (fun tx ->
           Tl2.write tx low 1;
-          Tl2.write tx high 1);
+          Tl2.write tx high 1));
       false
     with Exit -> true
   in
