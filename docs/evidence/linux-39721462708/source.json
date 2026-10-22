@@ -1,0 +1,9 @@
+{
+  "workflow_url": "https://github.com/STEVVVU/ocaml-transactional-memory/actions/runs/39721462708",
+  "source_sha": "f657988f87795faf514c3042072d3462d0c3a1f0",
+  "raw_benchmark_sha256": "731bee161ebffd345de7e594b80677caa23f4e5d05fa33bd31b04bec064580ee",
+  "summary_rows": 135,
+  "latency_rows": 315000,
+  "reported_errors": 0,
+  "scope": "Native OCaml5.3 bounded synthetic bank workloads; no general speedup or fairness guarantee."
+}

@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "cleanup_complete": true,
+  "ocaml_version": "5.3.0",
+  "details": "completed 5250 successful transfers across 1, 2, and 4 domains with Kcas, TL2, and Mutex"
+}

@@ -5,7 +5,7 @@ description: Verify the OCaml 5 transactional-memory examples and experimental T
 
 # Verification status
 
-This driver is a draft until it has been run on native OCaml 5. The current Windows host has no `ocamlc`, `opam`, or `dune`; do not substitute a simulator or OCaml 4. The checked-in Ubuntu CI job is the required native runner.
+Native Ubuntu run 39721462708 passed Launch, Doctor, Drive, retained Evidence and Cleanup on OCaml 5.3.0. Curated proof is in docs/evidence/linux-39721462708/. The current Windows host has no `ocamlc`, `opam`, or `dune`; use the maintained Ubuntu runner rather than a simulator or OCaml 4.
 
 ## Launch
 
