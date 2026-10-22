@@ -40,9 +40,32 @@ driver, benchmark, validation or profiler exit retains a false metrics verdict.
 `verification.json` remains functional evidence and cannot certify metrics.
 
 The separate workflow `profile_only=true` path runs the same 8192-shared-account
-read footprint with 100 operations, one domain, zero warmup and all five backend
+read footprint with 10 operations, one domain, zero warmup and all five backend
 rotations under a 300-second Callgrind limit. All backends/workloads remain
 present. Raw instruction profile, annotation and per-operation correctness data
 are retained. Its instrumented timing data is excluded from comparisons.
+
+The first 100-operation profile hit its 300-second limit after completing only
+one Kcas read-heavy row. Its partial counters were dominated by OCaml runtime
+GC coordination under Valgrind thread serialization, not a decisive TL2 CPU
+profile. The followup preserves the account footprint and backend rotations,
+reduces only diagnostic operations, uses supported fair thread scheduling and
+dumps counters every billion basic blocks. See the profiler's
+[thread scheduling](https://valgrind.org/docs/manual/manual-core.html#manual-core.opt.fair-sched)
+and [counter dumping](https://valgrind.org/docs/manual/cl-manual.html#cl-manual.dumps)
+documentation. Neither profile is a native timing comparison.
+
+The optional `framework=true` workflow path reuses the already resolved
+`multicore-bench` 0.1.7 dependency and its existing upstream fixture pattern.
+`coursework/bench/stm_framework.exe` compares checked 8192-account read-only
+snapshots across Kcas/TL2/Mutex and 1/2/4 recommended domains. The framework
+owns domain launch, synchronized starts, three warmups, five measured runs,
+random suite ordering and native JSON metrics. Five whole framework passes
+retain interleaved backend comparisons. Its default extra untimed domain at
+one worker keeps OCaml's multicore runtime enabled. This focused throughput
+path supplements the existing mixed-workload latency/failure/retry probes;
+it does not replace them or the full frozen baseline. No new engine/dependency.
+See the installed version's
+[public API](https://github.com/ocaml-multicore/multicore-bench/blob/0.1.7/lib/multicore_bench.mli).
 
 Keep every raw sample. Interleave backend order, report retries and tail latency, and make no speedup claim without repeated native runs.

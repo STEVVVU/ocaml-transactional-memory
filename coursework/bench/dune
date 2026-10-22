@@ -1,4 +1,11 @@
 (executable
  (name stm_bench)
+ (modules stm_bench)
  (enabled_if (>= %{ocaml_version} 5.0.0))
  (libraries coursework_stm mtime.clock threads))
+
+(executable
+ (name stm_framework)
+ (modules stm_framework)
+ (enabled_if (>= %{ocaml_version} 5.0.0))
+ (libraries coursework_stm multicore-bench))

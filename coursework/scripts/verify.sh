@@ -41,12 +41,14 @@ if [[ $status -eq 0 && $mode != verify ]]; then
   opam exec -- dune build --profile release coursework/bench/stm_bench.exe
   if [[ $mode == profile ]]; then
     { valgrind --version; sha256sum _build/default/coursework/bench/stm_bench.exe; } > "$run_dir/profile-identity.txt"
-    timeout 300 valgrind --tool=callgrind --callgrind-out-file="$run_dir/callgrind.out" \
+    timeout 300 valgrind --tool=callgrind --fair-sched=yes --dump-every-bb=1000000000 --callgrind-out-file="$run_dir/callgrind.out" \
       --log-file="$run_dir/callgrind.log" _build/default/coursework/bench/stm_bench.exe \
-      --output "$run_dir/profile-only.csv" --operations 100 --pairs 4096 \
+      --output "$run_dir/profile-only.csv" --operations 10 --pairs 4096 \
       --domains 1 --warmup 0 --latency-stride 100 \
       2>&1 | tee "$run_dir/profile-only.log"
-    callgrind_annotate --inclusive=yes --auto=yes "$run_dir/callgrind.out" > "$run_dir/callgrind-annotation.txt"
+    for dump in "$run_dir"/callgrind.out*; do
+      callgrind_annotate --inclusive=yes --auto=yes "$dump" > "$dump.txt"
+    done
     exit 0
   fi
   domains=1

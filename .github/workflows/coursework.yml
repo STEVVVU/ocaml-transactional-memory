@@ -11,6 +11,10 @@ on:
         description: Profile the large-account read footprint without a timing campaign
         type: boolean
         default: false
+      framework:
+        description: Run the existing multicore-bench read-only footprint comparison
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -76,6 +80,27 @@ jobs:
           mode=--metrics
           if [[ "${{ inputs.profile_only }}" == true ]]; then mode=--profile; fi
           bash coursework/scripts/verify.sh "$mode" metrics-${GITHUB_RUN_ID}
+      - name: Existing multicore-bench read-only comparison
+        if: inputs.framework
+        shell: bash
+        run: |
+          evidence=".agents/runs/framework-${GITHUB_RUN_ID}"
+          mkdir -p "$evidence"
+          opam exec -- dune build --profile release coursework/bench/stm_framework.exe
+          { git rev-parse HEAD; lscpu; opam exec -- ocamlc -version; opam list --installed; sha256sum _build/default/coursework/bench/stm_framework.exe; } > "$evidence/environment.txt"
+          for repeat in 1 2 3 4 5; do
+            timeout 180 _build/default/coursework/bench/stm_framework.exe > "$evidence/framework-$repeat.json" 2> "$evidence/framework-$repeat.stderr"
+          done
+          python3 - "$evidence" <<'PY'
+          import json, math, pathlib, sys
+          files = sorted(pathlib.Path(sys.argv[1]).glob('framework-*.json'))
+          assert len(files) == 5
+          for path in files:
+              data = json.load(path.open())
+              assert data['results']
+              metrics = [metric for suite in data['results'] for metric in suite['metrics']]
+              assert metrics and all(metric['#runs'] == 5 and math.isfinite(metric['value']) and metric['value'] > 0 for metric in metrics)
+          PY
       - name: Preserve native evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -86,6 +111,7 @@ jobs:
             .agents/runs/ci-${{ github.run_id }}
             .agents/runs/ci-failure-${{ github.run_id }}
             .agents/runs/metrics-${{ github.run_id }}
+            .agents/runs/framework-${{ github.run_id }}
             .agents/opam-packages.txt
             *.opam.locked
           if-no-files-found: error
