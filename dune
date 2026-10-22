@@ -4,4 +4,4 @@
   (package kcas)
   (package kcas_data))
  (libraries domain_shims)
- (files README.md))
+ (files README.upstream.md))
