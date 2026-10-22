@@ -125,9 +125,14 @@ one/two domains, with no cause isolated; Kcas medians differed by 0.3..2.4%.
 The improvement claim is specific to TL2's checked read-only footprint.
 [All 180 native aggregate metrics, every control, resources, exact commands,
 receipts and raw hashes](docs/evidence/linux-39735999046/) are retained.
-The original longer mixed/latency/retry sweep remains incomplete until its
-separate matched-configuration rerun; this fixture does not establish fairness
-or transactional abort behavior.
+The original longer mixed/latency/retry sweep remains incomplete. Run
+39739124466 finished all 135 groups in each smaller tier and 132 of 135 in
+the large tier before its 900-second cap, with zero errors in completed rows.
+The final four completed large TL2 read-heavy trials each took 86.8–91.7
+seconds; their measured regions already consumed 807.6 seconds across the tier.
+The unchanged workload now has a 1200-second tier cap, with GNU time outside
+the timeout so failed runs also retain resource costs. This fixture does not
+establish fairness or transactional abort behavior.
 
 ## Coursework and research
 

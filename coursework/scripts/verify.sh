@@ -54,7 +54,7 @@ if [[ $status -eq 0 && $mode != verify ]]; then
   domains=1
   for n in 2 4; do if (( n <= $(nproc) )); then domains="$domains,$n"; fi; done
   for pairs in 1 64 4096; do
-    timeout 900 /usr/bin/time -v _build/default/coursework/bench/stm_bench.exe \
+    /usr/bin/time -v -o "$run_dir/metrics-$pairs.resources.txt" timeout 1200 _build/default/coursework/bench/stm_bench.exe \
       --output "$run_dir/metrics-$pairs.csv" --operations 20000 --pairs "$pairs" \
       --domains "$domains" --warmup 1000 --latency-stride 100 \
       2>&1 | tee "$run_dir/metrics-$pairs.log"
