@@ -41,6 +41,61 @@ The benchmark runs disjoint, contended, and read-heavy bank operations through K
 opam exec -- dune exec --profile release coursework/bench/stm_bench.exe -- --output .agents/runs/local-1/bench.csv
 ```
 
+## Longer native evidence
+
+The original longer matrix [run 39728173211](https://github.com/STEVVVU/ocaml-transactional-memory/actions/runs/39728173211)
+hit its 900-second limit in the 8192-account tier. Its completed rows are retained;
+it is an incomplete campaign. TL2's completed one-domain read-heavy trials took
+55.49..56.65 seconds for 20000 operations, with zero retries and about nine
+billion allocated words per trial. No full-domain comparison is claimed from
+that failed run.
+
+The established `multicore-bench` 0.1.7 fixture then measured checked read-only
+snapshots of the same 8192-account footprint in [run 39733269312](https://github.com/STEVVVU/ocaml-transactional-memory/actions/runs/39733269312).
+Ubuntu 24.04, OCaml 5.3.0 Release and an AMD EPYC 9V45 VM reporting four logical
+CPUs on two cores produced the following aggregate snapshots/second:
+
+| Domains | Kcas | TL2 | Mutex |
+| ---: | ---: | ---: | ---: |
+| 1 | 9145 (8942..9509) | 474 (456..490) | 35836 (30581..36565) |
+| 2 | 16396 (16104..16732) | 806 (767..874) | 49310 (34586..51862) |
+| 4 | 18549 (17725..18624) | 1148 (1119..1181) | 40282 (38885..41311) |
+
+Values are medians of five framework-pass medians, with the full range of pass
+medians. Each pass randomizes suites and records five runs after three warmups,
+with 100 checked snapshots per domain per run. Native JSON preserves each pass's
+best/mean/median/SD/run count; individual inner timings are not emitted by this
+framework. This read-only fixture supplements the mixed workload and is not a
+transaction-abort or fairness measurement. Mutex's 100-snapshot batches are
+short (roughly 2.7..10 ms per domain); treat those controls as provisional
+until longer confirmation. Framework CPU/RSS/GC deltas were not collected.
+[All 90 native aggregate metrics,
+summaries, commands and raw hashes](docs/evidence/linux-39733269312/) are retained.
+
+A [separate successful profile](docs/evidence/linux-39733272376/) confirmed
+avoidable read-set sorting before TL2's read-only validation. Exclusive sorting
+and comparator instructions account for 12.65% of its full diagnostic process,
+which also includes all backends, setup and final correctness checks. This is
+not a native wall-time percentage. Independent review approved a narrow
+read-only validation fast path; native validation and the matched rerun remain
+pending, so no improved performance result is claimed.
+
+```sh
+opam exec -- dune build --profile release coursework/bench/stm_framework.exe
+mkdir -p .agents/runs/fresh-framework
+for repeat in 1 2 3 4 5; do
+  timeout 180 _build/default/coursework/bench/stm_framework.exe > .agents/runs/fresh-framework/framework-$repeat.json
+done
+```
+
+The maintained fixture now uses 1000 snapshots per domain to lengthen the
+Mutex controls. The workflow's `framework=true` comparison builds current
+source and frozen `6ecf556`, overlays that identical maintained fixture onto
+the archived baseline, and alternates five whole passes per build. It records
+source/fixture/binary hashes, resources and exit receipts. This is an explicit
+workload revision: the table above remains the original 100-snapshot baseline
+and cannot be compared directly with a future 1000-snapshot result.
+
 ## Coursework and research
 
 The workload follows the multicore transactional-memory topic in the [OCaml STM course project](https://vraajkum.github.io/ocaml-stm-webpage/). That project compares optimistic and pessimistic STM behavior on shared data structures. Its student implementation is not included here.

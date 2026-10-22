@@ -68,4 +68,16 @@ it does not replace them or the full frozen baseline. No new engine/dependency.
 See the installed version's
 [public API](https://github.com/ocaml-multicore/multicore-bench/blob/0.1.7/lib/multicore_bench.mli).
 
+After the original 100-snapshot baseline, the maintained fixture uses 1000
+snapshots per domain to lengthen short Mutex controls. The hosted framework
+path archives frozen source `6ecf556be3102730b6eef054c09c2a02aa279809`, copies
+the identical current fixture into that baseline, builds/tests both sources
+against the same installed resolution and alternates five whole passes per
+build. Each pass retains native five-run/three-warmup statistics, GNU time
+resources, its exact command and an exit receipt under a 180-second timeout.
+An atomic terminal receipt and owned temporary-source cleanup cover earlier
+build/test failures too. Source archive, fixture and executable hashes record
+the explicit workload revision. Keep the original 100-snapshot evidence;
+compare only the matched 1000-snapshot pair for improvement acceptance.
+
 Keep every raw sample. Interleave backend order, report retries and tail latency, and make no speedup claim without repeated native runs.

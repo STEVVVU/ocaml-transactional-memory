@@ -12,6 +12,13 @@ Run the verification executable with the native OCaml 5 runtime.
 
 Run `opam exec -- dune exec coursework/bin/stm_verify.exe -- --evidence .agents/runs/<run-id>`.
 
+`opam exec -- dune runtest` also pauses a read-only attempt after observing a
+cell, commits a writer on another domain, then requires the reader to return
+`None`. A same-value replacement checks that validation retains immutable
+state identity rather than accepting equal balances. The empty read-only case
+must still commit. Write-bearing lock order, version validation, rollback and
+the concurrent bank-history oracle remain exercised by the existing suite.
+
 ## Gotchas
 
 The backend supports integer cells only. It is a paper-inspired experiment, not a formal proof of TL2 or a replacement for Kcas.

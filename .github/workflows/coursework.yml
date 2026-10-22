@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       framework:
-        description: Run the existing multicore-bench read-only footprint comparison
+        description: Compare frozen and current TL2 with matched multicore-bench fixtures
         type: boolean
         default: false
   pull_request:
@@ -25,7 +25,7 @@ permissions:
 jobs:
   ocaml-5:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       QCHECK_MSG_INTERVAL: '60'
       OCAMLRUNPARAM: b
@@ -80,26 +80,82 @@ jobs:
           mode=--metrics
           if [[ "${{ inputs.profile_only }}" == true ]]; then mode=--profile; fi
           bash coursework/scripts/verify.sh "$mode" metrics-${GITHUB_RUN_ID}
-      - name: Existing multicore-bench read-only comparison
+      - name: Matched multicore-bench read-only comparison
         if: inputs.framework
         shell: bash
         run: |
           evidence=".agents/runs/framework-${GITHUB_RUN_ID}"
           mkdir -p "$evidence"
+          baseline="$RUNNER_TEMP/stm-baseline-${GITHUB_RUN_ID}"
+          baseline_owned=false
+          frozen=6ecf556be3102730b6eef054c09c2a02aa279809
+          printf '{"passed":false,"details":"matched comparison not completed"}\n' > "$evidence/framework-result.json"
+          finish_framework() {
+            status=$?
+            trap - EXIT
+            cleanup=true
+            if [ "$baseline_owned" = true ] && [ -d "$baseline" ]; then
+              if [ "$baseline" = "$RUNNER_TEMP/stm-baseline-${GITHUB_RUN_ID}" ]; then
+                rm -rf -- "$baseline" || cleanup=false
+              else cleanup=false; fi
+            fi
+            if [ "$cleanup" != true ]; then status=1; fi
+            python3 -c 'import json,os,sys; status=int(sys.argv[1]); cleanup=sys.argv[2]=="true"; p=sys.argv[3]; temporary=p+".tmp"; json.dump(dict(passed=status==0 and cleanup,exit_code=status,cleanup_complete=cleanup,fixture="8192 accounts; 1000 snapshots/domain; 3 warmups; 5 native runs; 5 alternating passes per source",baseline_source="6ecf556be3102730b6eef054c09c2a02aa279809",candidate_source=os.environ["GITHUB_SHA"]),open(temporary,"w"),indent=2); os.replace(temporary,p)' "$status" "$cleanup" "$evidence/framework-result.json"
+            exit "$status"
+          }
+          trap finish_framework EXIT
+          test ! -e "$baseline"
+          mkdir "$baseline"
+          baseline_owned=true
+          git fetch --no-tags origin "$frozen"
+          git archive --format=tar --output "$baseline/.source-archive.tar" "$frozen"
+          sha256sum "$baseline/.source-archive.tar" > "$evidence/baseline-archive.sha256"
+          tar -xf "$baseline/.source-archive.tar" -C "$baseline"
+          rm -- "$baseline/.source-archive.tar"
+          cp coursework/bench/stm_framework.ml "$baseline/coursework/bench/stm_framework.ml"
+          cmp coursework/bench/stm_framework.ml "$baseline/coursework/bench/stm_framework.ml"
           opam exec -- dune build --profile release coursework/bench/stm_framework.exe
-          { git rev-parse HEAD; lscpu; opam exec -- ocamlc -version; opam list --installed; sha256sum _build/default/coursework/bench/stm_framework.exe; } > "$evidence/environment.txt"
+          opam exec -- dune build --root "$baseline" --profile release coursework/bench/stm_framework.exe
+          opam exec -- dune runtest --root "$baseline" --display=short > "$evidence/baseline-tests.log" 2>&1
+          { printf 'baseline_source=%s\ncandidate_source=%s\nfixture_version=8192accounts-1000snapshots-v2\n' "$frozen" "$GITHUB_SHA"; lscpu; opam exec -- ocamlc -version; opam list --installed; sha256sum coursework/bench/stm_framework.ml "$baseline/coursework/bench/stm_framework.ml" _build/default/coursework/bench/stm_framework.exe "$baseline/_build/default/coursework/bench/stm_framework.exe"; } > "$evidence/environment.txt"
+          failed=0
           for repeat in 1 2 3 4 5; do
-            timeout 180 _build/default/coursework/bench/stm_framework.exe > "$evidence/framework-$repeat.json" 2> "$evidence/framework-$repeat.stderr"
+            order="baseline candidate"
+            if (( repeat % 2 == 0 )); then order="candidate baseline"; fi
+            for variant in $order; do
+              exe="_build/default/coursework/bench/stm_framework.exe"
+              if [ "$variant" = baseline ]; then exe="$baseline/$exe"; fi
+              prefix="$evidence/framework-$variant-$repeat"
+              printf '%s %s\n' "$repeat" "$variant" >> "$evidence/pass-order.txt"
+              printf '%q ' /usr/bin/time -v -o "$prefix.resources.txt" timeout 180 "$exe" > "$prefix.command.txt"
+              set +e
+              /usr/bin/time -v -o "$prefix.resources.txt" timeout 180 "$exe" > "$prefix.json" 2> "$prefix.stderr"
+              status=$?
+              set -e
+              python3 -c 'import json,sys; json.dump(dict(passed=int(sys.argv[1])==0,exit_code=int(sys.argv[1]),variant=sys.argv[2],pass_index=int(sys.argv[3])),open(sys.argv[4],"w"),indent=2)' "$status" "$variant" "$repeat" "$prefix.result.json"
+              if [ "$status" -ne 0 ]; then failed=1; fi
+            done
           done
+          test "$failed" -eq 0
           python3 - "$evidence" <<'PY'
-          import json, math, pathlib, sys
-          files = sorted(pathlib.Path(sys.argv[1]).glob('framework-*.json'))
-          assert len(files) == 5
-          for path in files:
-              data = json.load(path.open())
-              assert data['results']
-              metrics = [metric for suite in data['results'] for metric in suite['metrics']]
-              assert metrics and all(metric['#runs'] == 5 and math.isfinite(metric['value']) and metric['value'] > 0 for metric in metrics)
+          import json, math, os, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          domains = [d for d in (1, 2, 4) if d <= os.cpu_count()]
+          expected = {f'{backend} readonly {d} domains' for backend in ('kcas', 'tl2', 'mutex') for d in domains}
+          for variant in ('baseline', 'candidate'):
+              for repeat in range(1, 6):
+                  prefix = root / f'framework-{variant}-{repeat}'
+                  receipt = json.loads(prefix.with_suffix('.result.json').read_text())
+                  assert receipt['passed'] is True and receipt['exit_code'] == 0
+                  data = json.loads(prefix.with_suffix('.json').read_text())
+                  assert len(data['results']) == len(expected)
+                  assert {suite['name'] for suite in data['results']} == expected
+                  for suite in data['results']:
+                      assert len(suite['metrics']) == 2 and {m['units'] for m in suite['metrics']} == {'ns', 'M/s'}
+                      for metric in suite['metrics']:
+                          assert metric['#runs'] == 5
+                          assert all(math.isfinite(metric[key]) and metric[key] > 0 for key in ('value', '#best', '#mean', '#median'))
+                          assert math.isfinite(metric['#sd']) and metric['#sd'] >= 0
           PY
       - name: Preserve native evidence
         if: always()

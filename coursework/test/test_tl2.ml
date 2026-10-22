@@ -111,6 +111,47 @@ let test_retry_exhaustion () =
   check (Tl2.transact (fun tx -> Tl2.read tx cell) = 1)
     "an exhausted transaction must not publish its staged write"
 
+let test_read_only_validation () =
+  check (Tl2.attempt (fun _ -> 42) = Some 42)
+    "an empty read-only transaction must commit";
+  List.iter
+    (fun replacement ->
+      let cell = Tl2.create 0 in
+      let lock = Mutex.create () in
+      let condition = Condition.create () in
+      let ready = ref false and resume = ref false in
+      let reader =
+        Domain.spawn (fun () ->
+            Tl2.attempt (fun tx ->
+                let value = Tl2.read tx cell in
+                Mutex.lock lock;
+                ready := true;
+                Condition.broadcast condition;
+                while not !resume do Condition.wait condition lock done;
+                Mutex.unlock lock;
+                value))
+      in
+      Mutex.lock lock;
+      while not !ready do Condition.wait condition lock done;
+      Mutex.unlock lock;
+      let resume_reader () =
+        Mutex.lock lock;
+        resume := true;
+        Condition.broadcast condition;
+        Mutex.unlock lock
+      in
+      let reader_rejected = ref false in
+      Fun.protect
+        ~finally:(fun () ->
+          resume_reader ();
+          reader_rejected := Domain.join reader = None)
+        (fun () -> Tl2.transact (fun tx -> Tl2.write tx cell replacement));
+      check !reader_rejected
+        "a read-only attempt must reject a changed observation, even at the same value";
+      check (Tl2.transact (fun tx -> Tl2.read tx cell) = replacement)
+        "read-only rejection must preserve the concurrent writer's committed value")
+    [ 1; 0 ]
+
 let test_partial_lock_release () =
   let low = Tl2.create 0 and high = Tl2.create 0 in
   let lock = Mutex.create () in
@@ -318,6 +359,7 @@ let () =
   Printexc.record_backtrace true;
   test_snapshot_validation ();
   test_retry_exhaustion ();
+  test_read_only_validation ();
   test_partial_lock_release ();
   test_validation_after_version_reservation ();
   test_prepublication_failure_is_atomic ();

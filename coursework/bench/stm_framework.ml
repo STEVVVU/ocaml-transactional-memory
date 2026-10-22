@@ -3,7 +3,7 @@ open Multicore_bench
 
 let run_read_only ~backend ~domains ~budgetf =
   let accounts = 8192 in
-  let operations = 100 in
+  let operations = 1000 in
   let expected = accounts * 1_000_000 in
   let bank = Bank.create backend (Array.make accounts 1_000_000) in
   let init _ = () in

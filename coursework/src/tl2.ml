@@ -96,6 +96,14 @@ let validate tx entries =
 
 let commit ?(after_lock = fun _ -> ()) ?(after_version = fun _ -> ())
     ?(before_publish = fun () -> ()) tx result =
+  if Hashtbl.length tx.writes = 0 then (
+    (* Read-only validation needs no lock ordering or temporary sorted list. *)
+    Hashtbl.iter
+      (fun _ entry ->
+        if Atomic.get entry.cell.state != entry.state then raise Conflict)
+      tx.reads;
+    result)
+  else
   let entries = entries tx in
   let write_entries =
     List.filter (fun entry -> Hashtbl.mem tx.writes entry.cell.id) entries
