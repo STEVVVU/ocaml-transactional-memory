@@ -1,0 +1,4 @@
+(test
+ (name test_tl2)
+ (enabled_if (>= %{ocaml_version} 5.0.0))
+ (libraries coursework_stm kcas alcotest threads))

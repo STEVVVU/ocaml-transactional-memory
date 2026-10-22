@@ -1,0 +1,4 @@
+(executable
+ (name stm_bench)
+ (enabled_if (>= %{ocaml_version} 5.0.0))
+ (libraries coursework_stm mtime.clock threads))

@@ -1,0 +1,5 @@
+(library
+ (name coursework_stm)
+ (modules tl2 bank)
+ (enabled_if (>= %{ocaml_version} 5.0.0))
+ (libraries kcas threads))

@@ -32,6 +32,10 @@
  (depends
   (ocaml
    (>= 4.13.0))
+  (mtime
+   (and
+    (>= 2.1.0)
+    :with-test))
   (backoff
    (>= 0.1.1))
   (domain-local-await

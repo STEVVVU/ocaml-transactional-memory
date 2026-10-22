@@ -1,2 +1,7 @@
 _build
 *.install
+.agents/runs/
+.agents/opam-packages.txt
+*.opam.locked
+
+.audit/

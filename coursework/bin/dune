@@ -1,0 +1,4 @@
+(executable
+ (name stm_verify)
+ (enabled_if (>= %{ocaml_version} 5.0.0))
+ (libraries coursework_stm unix threads))

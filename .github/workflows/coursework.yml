@@ -1,0 +1,60 @@
+name: Coursework native verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ocaml-5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      QCHECK_MSG_INTERVAL: '60'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3
+        with:
+          ocaml-compiler: 5.3.0
+      - name: Resolve and record package versions
+        run: |
+          mkdir -p .agents/runs/ci-${GITHUB_RUN_ID} .agents/runs/ci-failure-${GITHUB_RUN_ID}
+          opam install . --deps-only --with-test
+          opam lock .
+          opam install . --deps-only --with-test --locked
+          opam list --installed --columns=name,version --color=never > .agents/opam-packages.txt
+          opam exec -- dune build @all
+      - name: Run upstream and coursework tests
+        run: opam exec -- dune runtest --display=short
+      - name: Drive native transaction checks
+        run: |
+          opam exec -- dune exec coursework/bin/stm_verify.exe -- --doctor 2>&1 | tee .agents/runs/ci-${GITHUB_RUN_ID}/doctor.log
+          opam exec -- dune exec coursework/bin/stm_verify.exe -- --evidence .agents/runs/ci-${GITHUB_RUN_ID} 2>&1 | tee .agents/runs/ci-${GITHUB_RUN_ID}/drive.log
+      - name: Prove failed verdict survives
+        shell: bash
+        run: |
+          set +e
+          opam exec -- dune exec coursework/bin/stm_verify.exe -- --inject-failure --evidence .agents/runs/ci-failure-${GITHUB_RUN_ID} 2>&1 | tee .agents/runs/ci-failure-${GITHUB_RUN_ID}/drive.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "deliberate failure unexpectedly passed" >&2
+            exit 1
+          fi
+          grep -F '"passed":false' .agents/runs/ci-failure-${GITHUB_RUN_ID}/verification.json
+      - name: Record interleaved native backend measurements
+        run: opam exec -- dune exec --profile release coursework/bench/stm_bench.exe -- --output .agents/runs/ci-${GITHUB_RUN_ID}/bench.csv
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ocaml-5-evidence-${{ github.run_id }}
+          path: |
+            .agents/runs/ci-${{ github.run_id }}
+            .agents/runs/ci-failure-${{ github.run_id }}
+            .agents/opam-packages.txt
+            *.opam.locked
+          if-no-files-found: error
