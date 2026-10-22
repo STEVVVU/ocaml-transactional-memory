@@ -9,7 +9,7 @@ This driver is a draft until it has been run on native OCaml 5. The current Wind
 
 ## Launch
 
-From the repository root, resolve dependencies with `opam install . --deps-only --with-test`, record that exact resolution with `opam lock .`, then run `opam install . --deps-only --with-test --locked`. Run `opam exec -- dune build @all` and `opam exec -- dune runtest`. The real coursework executable is `coursework/bin/stm_verify.exe` after a successful build. Invoke `opam exec -- dune exec coursework/bin/stm_verify.exe -- --evidence .agents/runs/<run-id>` for an isolated run. A successful run exits zero and prints a final JSON object with `passed: true`. A failure exits nonzero and writes a `passed: false` result before returning.
+From the repository root, resolve dependencies with `opam install . --deps-only --with-test`, record that exact resolution with `opam lock --keep-local .`, then run `opam install . --deps-only --with-test --locked`. Run `opam exec -- dune build @all` and `opam exec -- dune runtest`. The real coursework executable is `coursework/bin/stm_verify.exe` after a successful build. Invoke `opam exec -- dune exec coursework/bin/stm_verify.exe -- --evidence .agents/runs/<run-id>` for an isolated run. A successful run exits zero and prints a final JSON object with `passed: true`. A failure exits nonzero and writes a `passed: false` result before returning.
 
 ## Doctor
 

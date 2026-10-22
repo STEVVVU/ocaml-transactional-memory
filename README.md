@@ -10,7 +10,7 @@ Use OCaml 5 and Dune from the repository's opam packages:
 
 ```sh
 opam install . --deps-only --with-test
-opam lock .
+opam lock --keep-local .
 opam install . --deps-only --with-test --locked
 opam exec -- dune build @all
 opam exec -- dune runtest

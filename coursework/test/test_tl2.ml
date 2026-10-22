@@ -315,12 +315,17 @@ let test_other_backends () =
     [ Bank.Kcas_backend; Bank.Tl2_backend; Bank.Mutex_backend ]
 
 let () =
+  Printexc.record_backtrace true;
   test_snapshot_validation ();
   test_retry_exhaustion ();
   test_partial_lock_release ();
   test_validation_after_version_reservation ();
   test_prepublication_failure_is_atomic ();
-  List.iter test_parallel_increments [ 1; 2; 4 ];
+  List.iter (fun domains ->
+      Printf.printf "parallel increments domains=%d\n%!" domains;
+      test_parallel_increments domains) [ 1; 2; 4 ];
+  print_endline "history oracle";
   test_history_oracle ();
+  print_endline "other backends";
   test_other_backends ();
   print_endline "TL2 and backend checks passed"
