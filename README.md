@@ -4,6 +4,128 @@ This repository pairs the Kcas STM with a small experimental TL2 backend and a b
 
 The upstream Kcas implementation, tests, documentation, and history remain intact. See [README.upstream.md](README.upstream.md) for the original guide. Kcas is an ISC-licensed multi-word compare-and-set STM. The source checkout is pinned at `7a83eb3d1900aeefde42a27c2af60e6d8b7b360e`, dated June 14, 2025. Its upstream update cadence is a known limitation of this base.
 
+## Guide
+
+[Architecture and execution guide](#architecture-and-execution-guide) · [Build and test](#build-and-test) · [Experimental TL2 backend](#experimental-tl2-backend) · [Workload comparison](#workload-comparison) · [Coursework and research](#coursework-and-research)
+
+## Architecture and execution guide
+
+This checkout combines inherited Kcas and its upstream tests with a separate OCaml 5 coursework experiment. Kcas remains the general-purpose multi-word [STM](#stm). The added [TL2](#tl2) backend supports integer cells and the bank workload; it does not replace or modify Kcas.
+
+```mermaid
+flowchart LR
+  N1["Bank workload"] --> N2["Backend API"]
+  N2["Backend API"] --> N3["Kcas"]
+  N2["Backend API"] --> N4["Coursework TL2"]
+  N2["Backend API"] --> N5["Mutex baseline"]
+  N3 --> N6["Backend result"]
+  N4 --> N6
+  N5 --> N6
+  N6["Backend result"] --> N7["Conservation and history checks"]
+```
+
+Caption: the same bounded bank workload runs against three independent backends, then its results are checked.
+
+```mermaid
+flowchart TD
+  subgraph API["TL2 transaction"]
+    N1["Start with global version"] --> N2["Read cells and stage writes"]
+    N2["Read cells and stage writes"] --> N3["Read-only?"]
+    N3["Read-only?"] -->|"yes"| N5["Validate observed states"]
+    N3["Read-only?"] -->|"no"| N7["Sort write cells by ID"]
+    N7["Sort write cells by ID"] --> N8["Acquire cell locks"]
+    N8["Acquire cell locks"] --> N9["Reserve commit version"]
+    N9["Reserve commit version"] --> N10["Validate read set"]
+    N10["Validate read set"] --> N11["Publish staged values"]
+  end
+  N5["Validate observed states"] --> N12["Return result"]
+  N11["Publish staged values"] --> N12["Return result"]
+  N2 -->|"read conflict"| N13["Conflict"]
+  N5 -->|"validation conflict"| N13
+  N8 -->|"lock conflict"| N13
+  N10 -->|"validation conflict"| N13
+  N13 --> N14["Release any owned locks"]
+  N14 --> N15{"Attempts remain?"}
+  N15 -->|"yes, back off"| N1
+  N15 -->|"no"| N16["Retry_limit"]
+```
+
+Caption: TL2 records reads and writes, validates read-only attempts directly, and locks write cells in ID order before publishing. Conflicts release owned locks and restart until the caller's retry limit.
+
+| Subsystem | Responsibility and owned state | Source |
+| --- | --- | --- |
+| Upstream Kcas | General polymorphic compare-and-set STM and its public API. | [`src/`](src/), [`README.upstream.md`](README.upstream.md) |
+| TL2 cells and transactions | Integer cell identities, observations, read sets, write sets and commit validation. | [`coursework/src/tl2.ml`](coursework/src/tl2.ml) |
+| Workload and backends | Apply bank operations through Kcas, TL2 or a mutex for comparison. | [`coursework/`](coursework/) |
+| Deterministic checks | Exercise conflict, rollback, serial history and conservation properties. | [`coursework/test/`](coursework/test/) |
+| Verification driver | Runs real-domain checks and retains evidence outside source. | [Verification skill](.agents/skills/verify-ocaml-transactional-memory/SKILL.md) |
+
+Execution journey:
+
+1. The coursework workload creates account cells and chooses Kcas, TL2 or Mutex.
+2. A TL2 attempt records the current global version as `start_version`. It adds observed cells to its [read set](#read-set) and stages changes in its [write set](#write-set). Reads see a staged write to the same cell.
+3. A read-only attempt validates that each recorded cell still has its observed immutable state. A writing attempt sorts write cells by identity and acquires their locks.
+4. TL2 reserves a commit version, validates the full read set, then publishes each staged value with that version.
+5. A conflict releases locks owned by the attempt and retries. Reaching the caller's bound raises `Retry_limit`; the API does not promise fairness or completion.
+
+| Choice in the current implementation | Practical rationale | Alternative and cost to reconsider |
+| --- | --- | --- |
+| Keep TL2 in `coursework/` and Kcas in upstream `src/`. | Preserves upstream APIs, tests and history while allowing a bounded comparison. | Replacing Kcas would lose its general API and invalidate upstream behavior. |
+| Represent TL2 cells with integer values and atomic versioned states. | Keeps the experiment's data model narrow and avoids unsafe polymorphic conversion. | Generic values need a different representation and memory-reclamation design. |
+| Acquire write locks in cell-ID order. | Gives competing transactions one shared acquisition order. | Another order can change conflict patterns. This implementation aborts on failed atomic claims instead of waiting for locks. |
+| Make retries caller-bounded and expose `Retry_limit`. | Callers can observe exhaustion rather than receiving an unbounded loop. | Unbounded retry can hang; a fairness mechanism would need separate evidence. |
+
+These rationales are inferred from the code; they do not claim the original authors' historical motivation.
+
+<a id="stm"></a>
+
+<details><summary>What is software transactional memory?</summary>
+
+Software transactional memory groups reads and writes so a transaction appears to take effect as one consistent operation. Here, a bank transfer reads two account cells and stages both balance changes before commit.
+</details>
+
+<a id="tl2"></a>
+
+<details><summary>What is TL2?</summary>
+
+TL2 is a timestamp-based optimistic transaction algorithm. This coursework version samples a global version and validates cell observations before publishing. It is an experiment, not a formal proof or a lock-free implementation.
+</details>
+
+<a id="read-set"></a>
+
+<details><summary>What is a read set?</summary>
+
+A read set records each cell value and state observed by an attempt. For example, TL2 compares the current atomic state with the saved state before it commits a transaction that read an account balance.
+</details>
+
+<a id="write-set"></a>
+
+<details><summary>What is a write set?</summary>
+
+A write set holds proposed cell values until commit. A transfer stages the debit and credit there; failed validation publishes neither staged value.
+</details>
+
+<a id="commit-version"></a>
+
+<details><summary>What is a commit version?</summary>
+
+A commit version is the shared increasing number assigned to a successful TL2 write. Each published cell stores that version, which later attempts use to detect values newer than their starting snapshot.
+</details>
+
+<a id="retry-limit"></a>
+
+<details><summary>What is a retry limit?</summary>
+
+The retry limit caps how many transaction attempts the caller permits. When conflicts exhaust it, this implementation raises `Retry_limit`; backoff does not guarantee eventual success.
+</details>
+
+<a id="serial-history"></a>
+
+<details><summary>What is a serial history check?</summary>
+
+A serial history check asks whether concurrent operations could have occurred in some valid sequential order. The coursework checker validates a recorded transfer history and rejects an intentionally impossible control history.
+</details>
+
 ## Build and test
 
 Use OCaml 5 and Dune from the repository's opam packages:
