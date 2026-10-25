@@ -4,14 +4,40 @@ This repository pairs the Kcas STM with a small experimental TL2 backend and a b
 
 The upstream Kcas implementation, tests, documentation, and history remain intact. See [README.upstream.md](README.upstream.md) for the original guide. Kcas is an ISC-licensed multi-word compare-and-set STM. The source checkout is pinned at `7a83eb3d1900aeefde42a27c2af60e6d8b7b360e`, dated June 14, 2025. Its upstream update cadence is a known limitation of this base.
 
-## Guide
-
-[Implementation techniques](#implementation-techniques) ·
-[Architecture and execution guide](#architecture-and-execution-guide) · [Build and test](#build-and-test) · [Experimental TL2 backend](#experimental-tl2-backend) · [Workload comparison](#workload-comparison) · [Coursework and research](#coursework-and-research)
-
 ## Architecture and execution guide
 
+### Subsystem map
+
+Select a subsystem in the diagram to open its techniques, tradeoffs, and code references. The numbered links provide the same navigation. This map groups components; the execution diagrams show their runtime flow.
+
+```mermaid
+flowchart LR
+  system["OCaml transactional<br/>memory"]
+  system --> s1["1. TL2 transaction engine"]
+  click s1 href "https://github.com/STEVVVU/ocaml-transactional-memory#subsystem-tl2-transaction-engine" "Explore TL2 transaction engine" _top
+  system --> s2["2. Bank backend adapters and<br/>baselines"]
+  click s2 href "https://github.com/STEVVVU/ocaml-transactional-memory#subsystem-bank-backend-adapters-and-baselines" "Explore Bank backend adapters and baselines" _top
+  system --> s3["3. Concurrency and serial-history<br/>tests"]
+  click s3 href "https://github.com/STEVVVU/ocaml-transactional-memory#subsystem-concurrency-and-serial-history-tests" "Explore Concurrency and serial-history tests" _top
+  system --> s4["4. Native verification driver"]
+  click s4 href "https://github.com/STEVVVU/ocaml-transactional-memory#subsystem-native-verification-driver" "Explore Native verification driver" _top
+  system --> s5["5. Mixed workload benchmark"]
+  click s5 href "https://github.com/STEVVVU/ocaml-transactional-memory#subsystem-mixed-workload-benchmark" "Explore Mixed workload benchmark" _top
+  system --> s6["6. Framework read-only comparison<br/>and historical baseline"]
+  click s6 href "https://github.com/STEVVVU/ocaml-transactional-memory#subsystem-framework-read-only-comparison-and-historical-baseline" "Explore Framework read-only comparison and historical baseline" _top
+```
+
+1. [TL2 transaction engine](#subsystem-tl2-transaction-engine)
+2. [Bank backend adapters and baselines](#subsystem-bank-backend-adapters-and-baselines)
+3. [Concurrency and serial-history tests](#subsystem-concurrency-and-serial-history-tests)
+4. [Native verification driver](#subsystem-native-verification-driver)
+5. [Mixed workload benchmark](#subsystem-mixed-workload-benchmark)
+6. [Framework read-only comparison and historical baseline](#subsystem-framework-read-only-comparison-and-historical-baseline)
+
 This checkout combines inherited Kcas and its upstream tests with a separate OCaml 5 coursework experiment. Kcas remains the general-purpose multi-word [STM](#stm). The added [TL2](#tl2) backend supports integer cells and the bank workload; it does not replace or modify Kcas.
+
+<details>
+<summary>Expand flow diagram 1</summary>
 
 ```mermaid
 flowchart LR
@@ -25,7 +51,12 @@ flowchart LR
   N6["Backend result"] --> N7["Conservation and history checks"]
 ```
 
+</details>
+
 Caption: the same bounded bank workload runs against three independent backends, then its results are checked.
+
+<details>
+<summary>Expand flow diagram 2</summary>
 
 ```mermaid
 flowchart TD
@@ -50,6 +81,8 @@ flowchart TD
   N15 -->|"yes, back off"| N1
   N15 -->|"no"| N16["Retry_limit"]
 ```
+
+</details>
 
 Caption: TL2 records reads and writes, validates read-only attempts directly, and locks write cells in ID order before publishing. Conflicts release owned locks and restart until the caller's retry limit.
 
@@ -126,6 +159,454 @@ The retry limit caps how many transaction attempts the caller permits. When conf
 
 A serial history check asks whether concurrent operations could have occurred in some valid sequential order. The coursework checker validates a recorded transfer history and rejects an intentionally impossible control history.
 </details>
+
+## Implementation techniques
+
+These cards cover the active coursework transaction paths, their Kcas and mutex comparison backends, and the verification and benchmark methods. Kcas remains a separate inherited backend. Rationale describes current code and does not claim historical author intent.
+
+<details>
+<summary>Full technique index</summary>
+
+| Subsystem | Technique cards | Source |
+| --- | --- | --- |
+| TL2 transaction engine | [bounded atomic identities](#technique-bounded-atomic-identities), [optimistic versioned reads and snapshot validation](#technique-optimistic-versioned-reads), [write buffering](#technique-tl2-write-buffer), [sorted CAS write locking](#technique-ordered-cas-locking), [global commit clock](#technique-global-commit-clock), [direct read-only validation](#technique-read-only-fast-path), [publication and lock rollback](#technique-tl2-publication-rollback), [bounded retry](#technique-tl2-rollback-retry) | [`coursework/src/tl2.ml`](coursework/src/tl2.ml) |
+| Bank adapters and baselines | [Kcas multi-word commit](#technique-kcas-multiword-commit), [coarse mutex baseline](#technique-coarse-mutex-baseline), [shared bank invariant](#technique-shared-bank-invariant) | [`coursework/src/bank.ml`](coursework/src/bank.ml), [`src/kcas/kcas.ml`](src/kcas/kcas.ml) |
+| Concurrency and history tests | [Real-time serial-history search](#technique-realtime-serial-history-oracle) | [`coursework/test/test_tl2.ml`](coursework/test/test_tl2.ml) |
+| Native verification | [Domain verification and verdict receipts](#technique-native-domain-verification) | [`coursework/bin/stm_verify.ml`](coursework/bin/stm_verify.ml) |
+| Mixed benchmark | [Controlled contention workloads](#technique-controlled-contention-workloads), [synchronized rotated trials](#technique-synchronized-rotated-measurement) | [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml) |
+| Read-only and historical comparison | [Framework snapshot comparison](#technique-framework-readonly-comparison), [frozen-source fixture comparison](#technique-frozen-source-comparison) | [`coursework/bench/stm_framework.ml`](coursework/bench/stm_framework.ml), [workflow](.github/workflows/coursework.yml), [retained run](docs/evidence/linux-39741981142/README.md) |
+
+</details>
+
+<a id="subsystem-tl2-transaction-engine"></a>
+
+### 1. TL2 transaction engine
+
+[Back to the subsystem map](#architecture-and-execution-guide).
+
+**Code.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml).
+
+**Techniques.** [Bounded atomic identity allocation](#technique-bounded-atomic-identities), [Optimistic versioned reads and snapshot validation](#technique-optimistic-versioned-reads), [Write buffering and read-your-writes](#technique-tl2-write-buffer), [Sorted CAS write locking](#technique-ordered-cas-locking), [Global commit-version reservation](#technique-global-commit-clock), [Direct read-only validation](#technique-read-only-fast-path), [Staged publication and acquired-lock rollback](#technique-tl2-publication-rollback), [Rollback and bounded retry with backoff](#technique-tl2-rollback-retry).
+
+**Related concepts.** [TL2](#tl2), [read set](#read-set), [commit version](#commit-version), [retry limit](#retry-limit).
+
+<a id="technique-bounded-atomic-identities"></a>
+
+<details>
+<summary>Bounded atomic identity allocation</summary>
+
+**Mechanism.** `fresh_id` reads the shared next-ID counter and uses compare-and-set to claim the next integer. It tries at most 64 times. Cell creation uses an ID for stable ordering, and each transaction uses a fresh ID as its lock-owner token.
+
+**Example.** If two domains read the same counter value, only the successful compare-and-set receives that ID. The loser reads the updated counter on its next attempt.
+
+**Why here.** Distinct IDs let commit sort cells and let unlock verify the transaction still owns a lock.
+
+**Tradeoffs.** The counter is shared, contention can exhaust the bound, and reaching `max_int` raises `Identity_overflow` instead of wrapping.
+
+**Code and ownership.** [`fresh_id`](coursework/src/tl2.ml#L24), used by [`create`](coursework/src/tl2.ml#L34) and [`attempt_with_hooks`](coursework/src/tl2.ml#L150). Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-optimistic-versioned-reads"></a>
+
+<details>
+<summary>Optimistic versioned reads</summary>
+
+**Mechanism.** A transaction captures the global start version. On first read of a cell, it rejects locks and versions newer than its start, then loads the cell again and retries if the atomic state changed. Repeated reads use the stored observation; reads also see staged writes.
+
+**Example.** `read tx cell` returns the pending value when present, otherwise the observed value.
+
+**Why here.** The bank workload needs a compact optimistic backend for integer cells.
+
+**Tradeoffs.** A racing update aborts the transaction. Observation retries are bounded, so contention can surface as a conflict.
+
+**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L36) `observe` and `read`. Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-tl2-write-buffer"></a>
+
+<details>
+<summary>Write buffering and read-your-writes</summary>
+
+**Mechanism.** `write` first observes the cell, then stores the proposed integer in the transaction's write table. `read` checks that table before consulting the read set. The shared cell remains unchanged until commit publishes the buffered value.
+
+**Example.** After `write tx cell 4`, a later `read tx cell` returns `4` even though another attempt still sees the previously committed cell state.
+
+**Why here.** The bank transfer can stage a debit and credit before either shared balance changes.
+
+**Tradeoffs.** The log holds one pending value per cell, so a later write replaces an earlier pending value. User code can run again after a conflict.
+
+**Code and ownership.** [`read`](coursework/src/tl2.ml#L56) and [`write`](coursework/src/tl2.ml#L61). Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-ordered-cas-locking"></a>
+
+<details>
+<summary>Ordered CAS locking and validation</summary>
+
+**Mechanism.** Commit sorts observed cells by ID, filters write cells, and uses compare-and-set to replace each observed state with an owner lock. It reserves a commit version, validates the complete read set, then publishes new unlocked values at that version.
+
+**Example.** Two transactions that update accounts acquire locks in the same cell-ID order. A failed CAS aborts rather than waiting on a lock.
+
+**Why here.** Every attempt requests its write locks in the same cell-ID order. A failed compare-and-set aborts the attempt immediately, so it does not wait in a lock cycle.
+
+**Tradeoffs.** A failed acquisition can waste work already done. This implementation has no wait queue or lock stealing.
+
+**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L85) `validate` and [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L97) `commit`. Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-global-commit-clock"></a>
+
+<details>
+<summary>Global commit-version reservation</summary>
+
+**Mechanism.** A successful bounded compare-and-set increments the shared clock and returns the reserved version. A writing attempt reserves it after acquiring its write locks, validates the read set, and tags each published cell with that version. The clock can advance even if later validation aborts.
+
+**Example.** `next_version` reads the clock and attempts to replace `v` with `v + 1`; a failed CAS retries up to 64 times, then reports a transaction conflict.
+
+**Why here.** Versions let a new attempt detect a cell changed after its sampled start version.
+
+**Tradeoffs.** The clock is shared contention, and aborted attempts can leave gaps. Overflow is reported instead of wrapping.
+
+**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L65) `next_version` and `commit`. Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-read-only-fast-path"></a>
+
+<details>
+<summary>Direct read-only validation</summary>
+
+**Mechanism.** When the write table is empty, commit iterates the read table and compares each current atomic state by identity with the saved observed state. It returns the transaction result if all observations still match. This path does not sort entries, acquire locks, or reserve a commit version.
+
+**Example.** A bank snapshot reads each account and commits only if none of those exact cell states changed before validation.
+
+**Why here.** The workload includes full-bank snapshots, which have no staged updates.
+
+**Tradeoffs.** Any changed state rejects the snapshot, including a replacement with the same integer value. The path still visits every recorded read.
+
+**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L99) the read-only branch of `commit`. Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-tl2-publication-rollback"></a>
+
+<details>
+<summary>Staged publication and acquired-lock rollback</summary>
+
+**Mechanism.** After lock acquisition and validation, commit builds replacement states for every write entry before it calls the prepublication hook. It then publishes the new states. If an exception occurs before successful completion, the handler restores the original observed state for every write lock this attempt acquired.
+
+**Example.** The deterministic prepublication-failure test raises before the first store, then checks that both balances remain unchanged and a later transaction can acquire both cells.
+
+**Why here.** A failed attempt must not strand owned locks or expose its buffered transfer.
+
+**Tradeoffs.** A reserved global version is not rolled back. The hook tests the prepublication boundary, not arbitrary process failure during stores.
+
+**Code and ownership.** [`commit`](coursework/src/tl2.ml#L97) and [`test_prepublication_failure_is_atomic`](coursework/test/test_tl2.ml#L238). Extension.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-tl2-rollback-retry"></a>
+
+<details>
+<summary>Rollback and bounded retry</summary>
+
+**Mechanism.** Commit tracks acquired locks. Any exception before completion restores each cell's original observed state. `transact` reruns the operation after conflicts using the installed `Backoff.once`, and stops at the retry limit.
+
+**Example.** If locking the second write cell fails, the first lock is restored before the attempt returns conflict.
+
+**Why here.** Retry makes optimistic conflicts transparent to the bank transaction caller while preserving a finite bound.
+
+**Tradeoffs.** The operation can run multiple times, so callers must keep irreversible side effects outside it. Exhaustion raises `Retry_limit`.
+
+**Code and ownership.** [`commit`](coursework/src/tl2.ml#L97) releases acquired locks through [`release`](coursework/src/tl2.ml#L117), and [`transact`](coursework/src/tl2.ml#L178) retries. Mixed: extension plus inherited backoff.
+
+
+
+**Used in.** [TL2 transaction engine](#subsystem-tl2-transaction-engine). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="subsystem-bank-backend-adapters-and-baselines"></a>
+
+### 2. Bank backend adapters and baselines
+
+[Back to the subsystem map](#architecture-and-execution-guide).
+
+**Code.** [`coursework/src/bank.ml`](coursework/src/bank.ml), [`src/kcas/kcas.ml`](src/kcas/kcas.ml).
+
+**Techniques.** [Descriptor-based multi-word compare-and-set](#technique-kcas-multiword-commit), [Coarse mutex serialization](#technique-coarse-mutex-baseline), [Backend-neutral bank transfer invariant](#technique-shared-bank-invariant).
+
+**Related concepts.** [TL2](#tl2).
+
+<a id="technique-kcas-multiword-commit"></a>
+
+<details>
+<summary>Descriptor-based multi-word compare-and-set</summary>
+
+**Mechanism.** The bank's Kcas branch records account reads and writes through `Kcas.Xt`. Kcas stores accesses in a transaction tree. For a multi-location update, `determine` examines the descriptor entries against their expected states; the shared root is then finished as before or after, and helpers can complete publication and release.
+
+**Example.** A transfer records both account balances before setting the debit and credit, then submits the transaction once through `Kcas.Xt.commit`.
+
+**Why here.** This inherited backend provides the repository's general-purpose optimistic STM comparison.
+
+**Tradeoffs.** Kcas's polymorphic descriptor protocol is a different implementation from the bounded integer-cell TL2 experiment. The mixed benchmark does not count Kcas aborts.
+
+**Code and ownership.** [`Kcas.Xt.commit`](coursework/src/bank.ml#L43), [`Xt.commit`](src/kcas/kcas.ml#L936), [`determine`](src/kcas/kcas.ml#L326), and [`finish`](src/kcas/kcas.ml#L307). Inherited.
+
+
+
+**Used in.** [Bank backend adapters and baselines](#subsystem-bank-backend-adapters-and-baselines). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-coarse-mutex-baseline"></a>
+
+<details>
+<summary>Coarse mutex serialization</summary>
+
+**Mechanism.** The mutex backend stores balances in an ordinary array and guards the whole transfer with one mutex. `protect` acquires the lock and uses `Fun.protect` to release it whether the transfer returns or raises.
+
+**Example.** A funded transfer checks both balances and updates the source and destination while holding the same lock.
+
+**Why here.** It supplies a simple serialized control for the same bank operations used by the STM backends.
+
+**Tradeoffs.** Every transfer and snapshot shares one lock, including operations on unrelated accounts. The control does not provide optimistic concurrency.
+
+**Code and ownership.** [`protect`](coursework/src/bank.ml#L29), [`transfer`](coursework/src/bank.ml#L33), and [`snapshot`](coursework/src/bank.ml#L82). Extension.
+
+
+
+**Used in.** [Bank backend adapters and baselines](#subsystem-bank-backend-adapters-and-baselines). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-shared-bank-invariant"></a>
+
+<details>
+<summary>Backend-neutral bank transfer invariant</summary>
+
+**Mechanism.** `Bank.create` rejects negative balances and total overflow. `transfer` checks account bounds and nonnegative amounts, rejects insufficient funds and destination overflow, then applies the same debit-and-credit rule through Kcas, TL2, or Mutex. `snapshot` reads the backend's account set consistently.
+
+**Example.** A transfer from account `s` to `d` stages `s - amount` and `d + amount` only when both checks pass.
+
+**Why here.** One bounded operation gives all three backends a common correctness workload.
+
+**Tradeoffs.** The API models integer balances only. It does not compare general-purpose data structures or arbitrary transaction programs.
+
+**Code and ownership.** [`coursework/src/bank.ml`](coursework/src/bank.ml#L9) `create`, [`transfer`](coursework/src/bank.ml#L33), and [`snapshot`](coursework/src/bank.ml#L82). Extension.
+
+
+
+**Used in.** [Bank backend adapters and baselines](#subsystem-bank-backend-adapters-and-baselines). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="subsystem-concurrency-and-serial-history-tests"></a>
+
+### 3. Concurrency and serial-history tests
+
+[Back to the subsystem map](#architecture-and-execution-guide).
+
+**Code.** [`coursework/test/test_tl2.ml`](coursework/test/test_tl2.ml).
+
+**Techniques.** [Real-time-respecting serial-history search](#technique-realtime-serial-history-oracle).
+
+<a id="technique-realtime-serial-history-oracle"></a>
+
+<details>
+<summary>Real-time-respecting serial-history search</summary>
+
+**Mechanism.** The test records each operation's invocation and response sequence numbers, then searches candidate serial orders. It may choose an operation only after every operation that returned before its invocation has already been removed. Each candidate must produce the recorded success result, and the final balances must match.
+
+**Example.** Two domains run opposing transfers on two accounts; the oracle accepts the history only if some order respecting completed-before-invoked constraints explains the outcome.
+
+**Why here.** Final balance conservation alone would miss some impossible fractured histories.
+
+**Tradeoffs.** The search is used on a tiny four-operation history. It is an executable check, not a formal proof for all schedules.
+
+**Code and ownership.** [`coursework/test/test_tl2.ml`](coursework/test/test_tl2.ml#L269) `serial_history_exists` and [`test_history_oracle`](coursework/test/test_tl2.ml#L296). Extension.
+
+
+
+**Used in.** [Concurrency and serial-history tests](#subsystem-concurrency-and-serial-history-tests). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="subsystem-native-verification-driver"></a>
+
+### 4. Native verification driver
+
+[Back to the subsystem map](#architecture-and-execution-guide).
+
+**Code.** [`coursework/bin/stm_verify.ml`](coursework/bin/stm_verify.ml).
+
+**Techniques.** [Native-domain verification with durable verdicts](#technique-native-domain-verification).
+
+<a id="technique-native-domain-verification"></a>
+
+<details>
+<summary>Native-domain verification with durable verdicts</summary>
+
+**Mechanism.** The driver requires a native OCaml 5 runtime, runs 250 transfers per domain for each backend at 1, 2, and 4 domains, joins owned domains, and checks the final snapshot and total. It writes a JSON verdict to a new exclusive temporary file, closes it, then renames it to `verification.json`.
+
+**Example.** A successful run records the transfer count and OCaml version; a deliberately injected failure records `passed: false` while retaining the cleanup verdict.
+
+**Why here.** Native domains are required to exercise these concurrent code paths, and a retained receipt distinguishes observed results from a claimed run.
+
+**Tradeoffs.** This bounded matrix does not establish starvation freedom or all possible schedules.
+
+**Code and ownership.** [`coursework/bin/stm_verify.ml`](coursework/bin/stm_verify.ml#L27) `write_result`, [`transfer_round`](coursework/bin/stm_verify.ml#L62), and [`run_checks`](coursework/bin/stm_verify.ml#L83). Extension.
+
+
+
+**Used in.** [Native verification driver](#subsystem-native-verification-driver). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="subsystem-mixed-workload-benchmark"></a>
+
+### 5. Mixed workload benchmark
+
+[Back to the subsystem map](#architecture-and-execution-guide).
+
+**Code.** [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml).
+
+**Techniques.** [Controlled disjoint, contended, and read-heavy workloads](#technique-controlled-contention-workloads), [Synchronized starts and rotated backend trials](#technique-synchronized-rotated-measurement).
+
+**Related concepts.** [TL2](#tl2).
+
+<a id="technique-controlled-contention-workloads"></a>
+
+<details>
+<summary>Controlled disjoint, contended, and read-heavy workloads</summary>
+
+**Mechanism.** The benchmark chooses separate account-pair groups per domain for disjoint work and a shared pair group for contended work. Read-heavy work performs a full-bank total for nine of each ten operations. A deterministic index formula selects source accounts; each transfer uses the paired destination.
+
+**Example.** With one pair, contended workers compete on the same two accounts while disjoint workers receive separate pairs.
+
+**Why here.** These cases expose different sharing patterns while keeping backend operations and trial counts comparable.
+
+**Tradeoffs.** This closed-loop synthetic schedule does not model externally offered request rates. A chosen account count can make a trial short, so retained results flag short trials.
+
+**Code and ownership.** [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml#L3) workload variants and [`run`](coursework/bench/stm_bench.ml#L72). Extension.
+
+
+
+**Used in.** [Mixed workload benchmark](#subsystem-mixed-workload-benchmark). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-synchronized-rotated-measurement"></a>
+
+<details>
+<summary>Synchronized starts and rotated backend trials</summary>
+
+**Mechanism.** Worker domains and the coordinator wait on a mutex-and-condition start gate. Each trial rotates the order of Kcas, TL2, and Mutex by its trial index. The benchmark records per-operation elapsed time, computes quantiles from all samples, and can retain every Nth raw latency row.
+
+**Example.** Trial 0 runs Kcas, TL2, Mutex; the next trial shifts the first backend so one backend does not always run first.
+
+**Why here.** A common release point and rotating order reduce start skew and fixed order effects in these comparisons.
+
+**Tradeoffs.** Rotation does not eliminate host noise or make short trials representative. Subsampled raw rows cannot reconstruct quantiles computed from all operations.
+
+**Code and ownership.** [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml#L17) `start_gate` and [`run`](coursework/bench/stm_bench.ml#L72). Extension.
+
+
+
+**Used in.** [Mixed workload benchmark](#subsystem-mixed-workload-benchmark). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="subsystem-framework-read-only-comparison-and-historical-baseline"></a>
+
+### 6. Framework read-only comparison and historical baseline
+
+[Back to the subsystem map](#architecture-and-execution-guide).
+
+**Code.** [`coursework/bench/stm_framework.ml`](coursework/bench/stm_framework.ml), [`.github/workflows/coursework.yml`](.github/workflows/coursework.yml), [`docs/evidence/linux-39741981142/README.md`](docs/evidence/linux-39741981142/README.md).
+
+**Techniques.** [Framework-driven checked snapshot comparison](#technique-framework-readonly-comparison), [Frozen-source matched-fixture comparison](#technique-frozen-source-comparison).
+
+**Related concepts.** [TL2](#tl2).
+
+<a id="technique-framework-readonly-comparison"></a>
+
+<details>
+<summary>Framework-driven checked snapshot comparison</summary>
+
+**Mechanism.** The framework fixture constructs an 8192-account bank and checks the total during 1000 snapshots per domain. `Times.record` supplies three warmups and five measured runs. The benchmark includes only 1, 2, and 4 domains that do not exceed `Domain.recommended_domain_count`.
+
+**Example.** Each backend runs the same snapshot check at each supported domain count, and the fixture reports snapshot throughput metrics.
+
+**Why here.** This isolates read-only bank snapshots as a focused comparison alongside the mixed transfer workload.
+
+**Tradeoffs.** It does not measure write commits, conflict rates, fairness, or the mixed workload's tail latency.
+
+**Code and ownership.** [`coursework/bench/stm_framework.ml`](coursework/bench/stm_framework.ml#L4) `run_read_only` and the backend benchmark construction. Mixed: coursework fixture and inherited `multicore-bench` framework.
+
+
+
+**Used in.** [Framework read-only comparison and historical baseline](#subsystem-framework-read-only-comparison-and-historical-baseline). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+<a id="technique-frozen-source-comparison"></a>
+
+<details>
+<summary>Frozen-source matched-fixture comparison</summary>
+
+**Mechanism.** The optional workflow archives frozen source commit `6ecf556`, overlays the current framework fixture onto that checkout, builds and tests both sources under the same installed resolution, then alternates five whole benchmark passes per source. Receipts record source and fixture identity, results, and cleanup.
+
+**Example.** Run the workflow's `framework=true` path to compare the frozen TL2 implementation with the current one using the same 8192-account, 1000-snapshot fixture.
+
+**Why here.** Reusing one fixture and runner makes a historical comparison more controlled than comparing unrelated archived runs.
+
+**Tradeoffs.** The result applies to that fixture and runner. Other historical cross-host results remain noncausal comparisons.
+
+**Code and ownership.** [`.github/workflows/coursework.yml`](.github/workflows/coursework.yml#L84) and [retained run procedure](docs/evidence/linux-39741981142/README.md). Extension.
+
+
+
+**Used in.** [Framework read-only comparison and historical baseline](#subsystem-framework-read-only-comparison-and-historical-baseline). [Back to the subsystem map](#architecture-and-execution-guide).
+
+</details>
+
+## Guide
+
+[Implementation techniques](#implementation-techniques) ·
+[Architecture and execution guide](#architecture-and-execution-guide) · [Build and test](#build-and-test) · [Experimental TL2 backend](#experimental-tl2-backend) · [Workload comparison](#workload-comparison) · [Coursework and research](#coursework-and-research)
 
 ## Build and test
 
@@ -303,304 +784,3 @@ The workload follows the multicore transactional-memory topic in the [OCaml STM 
 The separate TL2 implementation follows the mechanism described in Dice, Shalev, and Shavit, [Transactional Locking II](https://people.csail.mit.edu/shanir/publications/Transactional_Locking.pdf), DISC 2006. The paper's validation, versioning, and write-lock protocol guide the experiment. Bounded tests here do not reproduce the paper's full evaluation or establish its formal properties.
 
 The inherited Windows workflow is archived byte-for-byte outside GitHub's active workflow directory; upstream scripts remain preserved. The added coursework workflow runs the upstream and coursework Dune tests on OCaml 5, captures package versions and lock files, exercises the driver, and preserves run evidence as an artifact.
-## Implementation techniques
-
-These cards cover the active coursework transaction paths, their Kcas and mutex comparison backends, and the verification and benchmark methods. Kcas remains a separate inherited backend. Rationale describes current code and does not claim historical author intent.
-
-| Subsystem | Technique cards | Source |
-| --- | --- | --- |
-| TL2 transaction engine | [bounded atomic identities](#technique-bounded-atomic-identities), [optimistic versioned reads and snapshot validation](#technique-optimistic-versioned-reads), [write buffering](#technique-tl2-write-buffer), [sorted CAS write locking](#technique-ordered-cas-locking), [global commit clock](#technique-global-commit-clock), [direct read-only validation](#technique-read-only-fast-path), [publication and lock rollback](#technique-tl2-publication-rollback), [bounded retry](#technique-tl2-rollback-retry) | [`coursework/src/tl2.ml`](coursework/src/tl2.ml) |
-| Bank adapters and baselines | [Kcas multi-word commit](#technique-kcas-multiword-commit), [coarse mutex baseline](#technique-coarse-mutex-baseline), [shared bank invariant](#technique-shared-bank-invariant) | [`coursework/src/bank.ml`](coursework/src/bank.ml), [`src/kcas/kcas.ml`](src/kcas/kcas.ml) |
-| Concurrency and history tests | [Real-time serial-history search](#technique-realtime-serial-history-oracle) | [`coursework/test/test_tl2.ml`](coursework/test/test_tl2.ml) |
-| Native verification | [Domain verification and verdict receipts](#technique-native-domain-verification) | [`coursework/bin/stm_verify.ml`](coursework/bin/stm_verify.ml) |
-| Mixed benchmark | [Controlled contention workloads](#technique-controlled-contention-workloads), [synchronized rotated trials](#technique-synchronized-rotated-measurement) | [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml) |
-| Read-only and historical comparison | [Framework snapshot comparison](#technique-framework-readonly-comparison), [frozen-source fixture comparison](#technique-frozen-source-comparison) | [`coursework/bench/stm_framework.ml`](coursework/bench/stm_framework.ml), [workflow](.github/workflows/coursework.yml), [retained run](docs/evidence/linux-39741981142/README.md) |
-
-<a id="technique-bounded-atomic-identities"></a>
-
-<details>
-<summary>Bounded atomic identity allocation</summary>
-
-**Mechanism.** `fresh_id` reads the shared next-ID counter and uses compare-and-set to claim the next integer. It tries at most 64 times. Cell creation uses an ID for stable ordering, and each transaction uses a fresh ID as its lock-owner token.
-
-**Example.** If two domains read the same counter value, only the successful compare-and-set receives that ID. The loser reads the updated counter on its next attempt.
-
-**Why here.** Distinct IDs let commit sort cells and let unlock verify the transaction still owns a lock.
-
-**Tradeoffs.** The counter is shared, contention can exhaust the bound, and reaching `max_int` raises `Identity_overflow` instead of wrapping.
-
-**Code and ownership.** [`fresh_id`](coursework/src/tl2.ml#L24), used by [`create`](coursework/src/tl2.ml#L34) and [`attempt_with_hooks`](coursework/src/tl2.ml#L150). Extension.
-
-</details>
-
-<a id="technique-optimistic-versioned-reads"></a>
-
-<details>
-<summary>Optimistic versioned reads</summary>
-
-**Mechanism.** A transaction captures the global start version. On first read of a cell, it rejects locks and versions newer than its start, then loads the cell again and retries if the atomic state changed. Repeated reads use the stored observation; reads also see staged writes.
-
-**Example.** `read tx cell` returns the pending value when present, otherwise the observed value.
-
-**Why here.** The bank workload needs a compact optimistic backend for integer cells.
-
-**Tradeoffs.** A racing update aborts the transaction. Observation retries are bounded, so contention can surface as a conflict.
-
-**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L36) `observe` and `read`. Extension.
-
-</details>
-
-<a id="technique-ordered-cas-locking"></a>
-
-<details>
-<summary>Ordered CAS locking and validation</summary>
-
-**Mechanism.** Commit sorts observed cells by ID, filters write cells, and uses compare-and-set to replace each observed state with an owner lock. It reserves a commit version, validates the complete read set, then publishes new unlocked values at that version.
-
-**Example.** Two transactions that update accounts acquire locks in the same cell-ID order. A failed CAS aborts rather than waiting on a lock.
-
-**Why here.** Every attempt requests its write locks in the same cell-ID order. A failed compare-and-set aborts the attempt immediately, so it does not wait in a lock cycle.
-
-**Tradeoffs.** A failed acquisition can waste work already done. This implementation has no wait queue or lock stealing.
-
-**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L85) `validate` and [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L97) `commit`. Extension.
-
-</details>
-
-<a id="technique-tl2-write-buffer"></a>
-
-<details>
-<summary>Write buffering and read-your-writes</summary>
-
-**Mechanism.** `write` first observes the cell, then stores the proposed integer in the transaction's write table. `read` checks that table before consulting the read set. The shared cell remains unchanged until commit publishes the buffered value.
-
-**Example.** After `write tx cell 4`, a later `read tx cell` returns `4` even though another attempt still sees the previously committed cell state.
-
-**Why here.** The bank transfer can stage a debit and credit before either shared balance changes.
-
-**Tradeoffs.** The log holds one pending value per cell, so a later write replaces an earlier pending value. User code can run again after a conflict.
-
-**Code and ownership.** [`read`](coursework/src/tl2.ml#L56) and [`write`](coursework/src/tl2.ml#L61). Extension.
-
-</details>
-
-<a id="technique-global-commit-clock"></a>
-
-<details>
-<summary>Global commit-version reservation</summary>
-
-**Mechanism.** A successful bounded compare-and-set increments the shared clock and returns the reserved version. A writing attempt reserves it after acquiring its write locks, validates the read set, and tags each published cell with that version. The clock can advance even if later validation aborts.
-
-**Example.** `next_version` reads the clock and attempts to replace `v` with `v + 1`; a failed CAS retries up to 64 times, then reports a transaction conflict.
-
-**Why here.** Versions let a new attempt detect a cell changed after its sampled start version.
-
-**Tradeoffs.** The clock is shared contention, and aborted attempts can leave gaps. Overflow is reported instead of wrapping.
-
-**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L65) `next_version` and `commit`. Extension.
-
-</details>
-
-<a id="technique-read-only-fast-path"></a>
-
-<details>
-<summary>Direct read-only validation</summary>
-
-**Mechanism.** When the write table is empty, commit iterates the read table and compares each current atomic state by identity with the saved observed state. It returns the transaction result if all observations still match. This path does not sort entries, acquire locks, or reserve a commit version.
-
-**Example.** A bank snapshot reads each account and commits only if none of those exact cell states changed before validation.
-
-**Why here.** The workload includes full-bank snapshots, which have no staged updates.
-
-**Tradeoffs.** Any changed state rejects the snapshot, including a replacement with the same integer value. The path still visits every recorded read.
-
-**Code and ownership.** [`coursework/src/tl2.ml`](coursework/src/tl2.ml#L99) the read-only branch of `commit`. Extension.
-
-</details>
-
-<a id="technique-tl2-publication-rollback"></a>
-
-<details>
-<summary>Staged publication and acquired-lock rollback</summary>
-
-**Mechanism.** After lock acquisition and validation, commit builds replacement states for every write entry before it calls the prepublication hook. It then publishes the new states. If an exception occurs before successful completion, the handler restores the original observed state for every write lock this attempt acquired.
-
-**Example.** The deterministic prepublication-failure test raises before the first store, then checks that both balances remain unchanged and a later transaction can acquire both cells.
-
-**Why here.** A failed attempt must not strand owned locks or expose its buffered transfer.
-
-**Tradeoffs.** A reserved global version is not rolled back. The hook tests the prepublication boundary, not arbitrary process failure during stores.
-
-**Code and ownership.** [`commit`](coursework/src/tl2.ml#L97) and [`test_prepublication_failure_is_atomic`](coursework/test/test_tl2.ml#L238). Extension.
-
-</details>
-
-<a id="technique-kcas-multiword-commit"></a>
-
-<details>
-<summary>Descriptor-based multi-word compare-and-set</summary>
-
-**Mechanism.** The bank's Kcas branch records account reads and writes through `Kcas.Xt`. Kcas stores accesses in a transaction tree. For a multi-location update, `determine` examines the descriptor entries against their expected states; the shared root is then finished as before or after, and helpers can complete publication and release.
-
-**Example.** A transfer records both account balances before setting the debit and credit, then submits the transaction once through `Kcas.Xt.commit`.
-
-**Why here.** This inherited backend provides the repository's general-purpose optimistic STM comparison.
-
-**Tradeoffs.** Kcas's polymorphic descriptor protocol is a different implementation from the bounded integer-cell TL2 experiment. The mixed benchmark does not count Kcas aborts.
-
-**Code and ownership.** [`Kcas.Xt.commit`](coursework/src/bank.ml#L43), [`Xt.commit`](src/kcas/kcas.ml#L936), [`determine`](src/kcas/kcas.ml#L326), and [`finish`](src/kcas/kcas.ml#L307). Inherited.
-
-</details>
-
-<a id="technique-coarse-mutex-baseline"></a>
-
-<details>
-<summary>Coarse mutex serialization</summary>
-
-**Mechanism.** The mutex backend stores balances in an ordinary array and guards the whole transfer with one mutex. `protect` acquires the lock and uses `Fun.protect` to release it whether the transfer returns or raises.
-
-**Example.** A funded transfer checks both balances and updates the source and destination while holding the same lock.
-
-**Why here.** It supplies a simple serialized control for the same bank operations used by the STM backends.
-
-**Tradeoffs.** Every transfer and snapshot shares one lock, including operations on unrelated accounts. The control does not provide optimistic concurrency.
-
-**Code and ownership.** [`protect`](coursework/src/bank.ml#L29), [`transfer`](coursework/src/bank.ml#L33), and [`snapshot`](coursework/src/bank.ml#L82). Extension.
-
-</details>
-
-<a id="technique-shared-bank-invariant"></a>
-
-<details>
-<summary>Backend-neutral bank transfer invariant</summary>
-
-**Mechanism.** `Bank.create` rejects negative balances and total overflow. `transfer` checks account bounds and nonnegative amounts, rejects insufficient funds and destination overflow, then applies the same debit-and-credit rule through Kcas, TL2, or Mutex. `snapshot` reads the backend's account set consistently.
-
-**Example.** A transfer from account `s` to `d` stages `s - amount` and `d + amount` only when both checks pass.
-
-**Why here.** One bounded operation gives all three backends a common correctness workload.
-
-**Tradeoffs.** The API models integer balances only. It does not compare general-purpose data structures or arbitrary transaction programs.
-
-**Code and ownership.** [`coursework/src/bank.ml`](coursework/src/bank.ml#L9) `create`, [`transfer`](coursework/src/bank.ml#L33), and [`snapshot`](coursework/src/bank.ml#L82). Extension.
-
-</details>
-
-<a id="technique-realtime-serial-history-oracle"></a>
-
-<details>
-<summary>Real-time-respecting serial-history search</summary>
-
-**Mechanism.** The test records each operation's invocation and response sequence numbers, then searches candidate serial orders. It may choose an operation only after every operation that returned before its invocation has already been removed. Each candidate must produce the recorded success result, and the final balances must match.
-
-**Example.** Two domains run opposing transfers on two accounts; the oracle accepts the history only if some order respecting completed-before-invoked constraints explains the outcome.
-
-**Why here.** Final balance conservation alone would miss some impossible fractured histories.
-
-**Tradeoffs.** The search is used on a tiny four-operation history. It is an executable check, not a formal proof for all schedules.
-
-**Code and ownership.** [`coursework/test/test_tl2.ml`](coursework/test/test_tl2.ml#L269) `serial_history_exists` and [`test_history_oracle`](coursework/test/test_tl2.ml#L296). Extension.
-
-</details>
-
-<a id="technique-native-domain-verification"></a>
-
-<details>
-<summary>Native-domain verification with durable verdicts</summary>
-
-**Mechanism.** The driver requires a native OCaml 5 runtime, runs 250 transfers per domain for each backend at 1, 2, and 4 domains, joins owned domains, and checks the final snapshot and total. It writes a JSON verdict to a new exclusive temporary file, closes it, then renames it to `verification.json`.
-
-**Example.** A successful run records the transfer count and OCaml version; a deliberately injected failure records `passed: false` while retaining the cleanup verdict.
-
-**Why here.** Native domains are required to exercise these concurrent code paths, and a retained receipt distinguishes observed results from a claimed run.
-
-**Tradeoffs.** This bounded matrix does not establish starvation freedom or all possible schedules.
-
-**Code and ownership.** [`coursework/bin/stm_verify.ml`](coursework/bin/stm_verify.ml#L27) `write_result`, [`transfer_round`](coursework/bin/stm_verify.ml#L62), and [`run_checks`](coursework/bin/stm_verify.ml#L83). Extension.
-
-</details>
-
-<a id="technique-controlled-contention-workloads"></a>
-
-<details>
-<summary>Controlled disjoint, contended, and read-heavy workloads</summary>
-
-**Mechanism.** The benchmark chooses separate account-pair groups per domain for disjoint work and a shared pair group for contended work. Read-heavy work performs a full-bank total for nine of each ten operations. A deterministic index formula selects source accounts; each transfer uses the paired destination.
-
-**Example.** With one pair, contended workers compete on the same two accounts while disjoint workers receive separate pairs.
-
-**Why here.** These cases expose different sharing patterns while keeping backend operations and trial counts comparable.
-
-**Tradeoffs.** This closed-loop synthetic schedule does not model externally offered request rates. A chosen account count can make a trial short, so retained results flag short trials.
-
-**Code and ownership.** [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml#L3) workload variants and [`run`](coursework/bench/stm_bench.ml#L72). Extension.
-
-</details>
-
-<a id="technique-synchronized-rotated-measurement"></a>
-
-<details>
-<summary>Synchronized starts and rotated backend trials</summary>
-
-**Mechanism.** Worker domains and the coordinator wait on a mutex-and-condition start gate. Each trial rotates the order of Kcas, TL2, and Mutex by its trial index. The benchmark records per-operation elapsed time, computes quantiles from all samples, and can retain every Nth raw latency row.
-
-**Example.** Trial 0 runs Kcas, TL2, Mutex; the next trial shifts the first backend so one backend does not always run first.
-
-**Why here.** A common release point and rotating order reduce start skew and fixed order effects in these comparisons.
-
-**Tradeoffs.** Rotation does not eliminate host noise or make short trials representative. Subsampled raw rows cannot reconstruct quantiles computed from all operations.
-
-**Code and ownership.** [`coursework/bench/stm_bench.ml`](coursework/bench/stm_bench.ml#L17) `start_gate` and [`run`](coursework/bench/stm_bench.ml#L72). Extension.
-
-</details>
-
-<a id="technique-framework-readonly-comparison"></a>
-
-<details>
-<summary>Framework-driven checked snapshot comparison</summary>
-
-**Mechanism.** The framework fixture constructs an 8192-account bank and checks the total during 1000 snapshots per domain. `Times.record` supplies three warmups and five measured runs. The benchmark includes only 1, 2, and 4 domains that do not exceed `Domain.recommended_domain_count`.
-
-**Example.** Each backend runs the same snapshot check at each supported domain count, and the fixture reports snapshot throughput metrics.
-
-**Why here.** This isolates read-only bank snapshots as a focused comparison alongside the mixed transfer workload.
-
-**Tradeoffs.** It does not measure write commits, conflict rates, fairness, or the mixed workload's tail latency.
-
-**Code and ownership.** [`coursework/bench/stm_framework.ml`](coursework/bench/stm_framework.ml#L4) `run_read_only` and the backend benchmark construction. Mixed: coursework fixture and inherited `multicore-bench` framework.
-
-</details>
-
-<a id="technique-frozen-source-comparison"></a>
-
-<details>
-<summary>Frozen-source matched-fixture comparison</summary>
-
-**Mechanism.** The optional workflow archives frozen source commit `6ecf556`, overlays the current framework fixture onto that checkout, builds and tests both sources under the same installed resolution, then alternates five whole benchmark passes per source. Receipts record source and fixture identity, results, and cleanup.
-
-**Example.** Run the workflow's `framework=true` path to compare the frozen TL2 implementation with the current one using the same 8192-account, 1000-snapshot fixture.
-
-**Why here.** Reusing one fixture and runner makes a historical comparison more controlled than comparing unrelated archived runs.
-
-**Tradeoffs.** The result applies to that fixture and runner. Other historical cross-host results remain noncausal comparisons.
-
-**Code and ownership.** [`.github/workflows/coursework.yml`](.github/workflows/coursework.yml#L84) and [retained run procedure](docs/evidence/linux-39741981142/README.md). Extension.
-
-</details>
-
-<a id="technique-tl2-rollback-retry"></a>
-
-<details>
-<summary>Rollback and bounded retry</summary>
-
-**Mechanism.** Commit tracks acquired locks. Any exception before completion restores each cell's original observed state. `transact` reruns the operation after conflicts using the installed `Backoff.once`, and stops at the retry limit.
-
-**Example.** If locking the second write cell fails, the first lock is restored before the attempt returns conflict.
-
-**Why here.** Retry makes optimistic conflicts transparent to the bank transaction caller while preserving a finite bound.
-
-**Tradeoffs.** The operation can run multiple times, so callers must keep irreversible side effects outside it. Exhaustion raises `Retry_limit`.
-
-**Code and ownership.** [`commit`](coursework/src/tl2.ml#L97) releases acquired locks through [`release`](coursework/src/tl2.ml#L117), and [`transact`](coursework/src/tl2.ml#L178) retries. Mixed: extension plus inherited backoff.
-
-</details>
