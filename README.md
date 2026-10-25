@@ -6,6 +6,388 @@ The upstream Kcas implementation, tests, documentation, and history remain intac
 
 ## Architecture and execution guide
 
+<!-- execution-flow:start -->
+### Execution flow
+
+Start with the primary path, then expand a detailed workflow. Select a numbered node to see its operation, implementation techniques, and source. Solid arrows show the named control, data, or lifecycle handoff; dotted arrows show error paths. Separate entry points are named in each workflow.
+
+<a id="review-walkthrough"></a>
+
+#### Walk through one concrete example
+
+Transfer one unit from account 1 to account 2 using the configured TL2 backend.
+
+**Trace.** [Select a bank backend](#flow-step-bank-adapter) → [Start a TL2 attempt](#flow-step-tl2-start) → [Read versioned cells](#flow-step-tl2-observe) → [Lock write cells in ID order](#flow-step-tl2-sort-lock) → [Reserve version and validate](#flow-step-tl2-clock-validate) → [Publish staged values](#flow-step-tl2-publish).
+
+**Result and boundary.** TL2 reads versioned cells, locks the write set in ID order, validates against a reserved commit version, and publishes staged values. A detected conflict retries within the configured bound; a terminal conflict propagates failure instead of claiming a completed transfer.
+
+<details>
+<summary>Implementation decisions to explain</summary>
+
+**Why acquire the write locks in cell ID order?** Sorting gives write-set acquisition and rollback a deterministic order. Each lock CAS aborts on contention rather than waiting for another lock, so this path does not rely on blocking deadlock avoidance; sorting costs work and validation may still force a retry.
+
+[Sorted CAS write locking](#technique-ordered-cas-locking).
+
+**Why stage writes before publishing them?** The attempt can validate its observations before exposing its new values, preserving transaction atomicity on this path. Staged state must be discarded when the attempt retries or fails.
+
+[Write buffering and read-your-writes](#technique-tl2-write-buffer).
+
+</details>
+
+#### Primary execution flow
+
+A bank transfer selects one of three backend paths. TL2 starts an optimistic attempt, reads and stages values, then either validates a read-only result or locks, validates, and publishes writes; conflicts retry up to the configured bound.
+
+```mermaid
+flowchart TD
+    n1["1. Select a bank backend"]
+    click n1 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-bank-adapter" "Open step, techniques, and source" _top
+    n2["2. Start a TL2 attempt"]
+    click n2 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-start" "Open step, techniques, and source" _top
+    n3["3. Read versioned cells"]
+    click n3 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-observe" "Open step, techniques, and source" _top
+    n4["4. Validate read-only attempt"]
+    click n4 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-readonly" "Open step, techniques, and source" _top
+    n5["5. Lock write cells in ID order"]
+    click n5 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-sort-lock" "Open step, techniques, and source" _top
+    n6["6. Reserve version and validate"]
+    click n6 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-clock-validate" "Open step, techniques, and source" _top
+    n7["7. Publish staged values"]
+    click n7 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-publish" "Open step, techniques, and source" _top
+    n8["8. Retry conflicts within the<br/>bound"]
+    click n8 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-retry" "Open step, techniques, and source" _top
+    n9["9. Commit through inherited Kcas"]
+    click n9 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-kcas-commit" "Open step, techniques, and source" _top
+    n10["10. Serialize transfer with<br/>mutex"]
+    click n10 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-mutex-transfer" "Open step, techniques, and source" _top
+    n16["16. Propagate terminal failure"]
+    click n16 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-failure" "Open step, techniques, and source" _top
+    n1 -->|"TL2 backend selected"| n2
+    n2 -->|"attempt created"| n3
+    n3 -->|"body returns with no writes"| n4
+    n3 -->|"body returns with writes"| n5
+    n4 -->|"state changed during validation"| n8
+    n5 -->|"all write CAS operations succeed"| n6
+    n5 -->|"write lock CAS fails"| n8
+    n6 -->|"validation succeeds"| n7
+    n6 -->|"validation conflict"| n8
+    n8 -->|"attempts remain"| n2
+    n1 -->|"Kcas backend selected"| n9
+    n1 -->|"Mutex backend selected"| n10
+    n2 -->|"Identity_contention aborts attempt"| n8
+    n3 -->|"Conflict in transaction body aborts<br/>attempt"| n8
+    n8 -.->|"remaining = 1 raises Retry_limit"| n16
+    n2 -.->|"Identity_overflow propagates"| n16
+    n6 -.->|"Version_overflow releases locks and<br/>propagates"| n16
+    n7 -.->|"Non-conflict prepublication exception<br/>releases locks and propagates"| n16
+```
+
+**Detailed workflows.** [Transfer through a selected backend](#flow-workflow-bank-transactions) · [Check transaction history](#flow-workflow-history-check) · [Verify native domain behavior](#flow-workflow-verification) · [Measure mixed workloads](#flow-workflow-mixed-measurement) · [Compare frozen framework runs](#flow-workflow-framework-comparison).
+
+<a id="flow-workflow-bank-transactions"></a>
+
+<details>
+<summary>Transfer through a selected backend</summary>
+
+The bank API validates input, then uses Kcas, TL2, or a mutex. Only TL2 has the bounded optimistic retry path shown in detail.
+
+```mermaid
+flowchart TD
+    n1["1. Select a bank backend"]
+    click n1 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-bank-adapter" "Open step, techniques, and source" _top
+    n2["2. Start a TL2 attempt"]
+    click n2 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-start" "Open step, techniques, and source" _top
+    n3["3. Read versioned cells"]
+    click n3 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-observe" "Open step, techniques, and source" _top
+    n4["4. Validate read-only attempt"]
+    click n4 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-readonly" "Open step, techniques, and source" _top
+    n5["5. Lock write cells in ID order"]
+    click n5 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-sort-lock" "Open step, techniques, and source" _top
+    n6["6. Reserve version and validate"]
+    click n6 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-clock-validate" "Open step, techniques, and source" _top
+    n7["7. Publish staged values"]
+    click n7 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-publish" "Open step, techniques, and source" _top
+    n8["8. Retry conflicts within the<br/>bound"]
+    click n8 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-retry" "Open step, techniques, and source" _top
+    n9["9. Commit through inherited Kcas"]
+    click n9 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-kcas-commit" "Open step, techniques, and source" _top
+    n10["10. Serialize transfer with<br/>mutex"]
+    click n10 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-mutex-transfer" "Open step, techniques, and source" _top
+    n16["16. Propagate terminal failure"]
+    click n16 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-tl2-failure" "Open step, techniques, and source" _top
+    n1 -->|"TL2 backend selected"| n2
+    n2 -->|"attempt created"| n3
+    n3 -->|"body returns with no writes"| n4
+    n3 -->|"body returns with writes"| n5
+    n4 -->|"state changed during validation"| n8
+    n5 -->|"all write CAS operations succeed"| n6
+    n5 -->|"write lock CAS fails"| n8
+    n6 -->|"validation succeeds"| n7
+    n6 -->|"validation conflict"| n8
+    n8 -->|"attempts remain"| n2
+    n1 -->|"Kcas backend selected"| n9
+    n1 -->|"Mutex backend selected"| n10
+    n2 -->|"Identity_contention aborts attempt"| n8
+    n3 -->|"Conflict in transaction body aborts<br/>attempt"| n8
+    n8 -.->|"remaining = 1 raises Retry_limit"| n16
+    n2 -.->|"Identity_overflow propagates"| n16
+    n6 -.->|"Version_overflow releases locks and<br/>propagates"| n16
+    n7 -.->|"Non-conflict prepublication exception<br/>releases locks and propagates"| n16
+```
+
+</details>
+
+<a id="flow-workflow-history-check"></a>
+
+<details>
+<summary>Check transaction history</summary>
+
+The test suite records concurrent transfer histories and asks whether any real-time-respecting serial order yields the final balances. This does not execute in production.
+
+```mermaid
+flowchart TD
+    n11["11. Search for a valid serial<br/>history"]
+    click n11 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-history-oracle" "Open step, techniques, and source" _top
+```
+
+</details>
+
+<a id="flow-workflow-verification"></a>
+
+<details>
+<summary>Verify native domain behavior</summary>
+
+The native driver runs bank checks and saves a verdict. Its execution is independent of the transaction API call path.
+
+```mermaid
+flowchart TD
+    n12["12. Run native bank checks and<br/>save verdict"]
+    click n12 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-native-verify" "Open step, techniques, and source" _top
+```
+
+</details>
+
+<a id="flow-workflow-mixed-measurement"></a>
+
+<details>
+<summary>Measure mixed workloads</summary>
+
+The standalone benchmark synchronizes worker starts and rotates backend trials for configured workload shapes.
+
+```mermaid
+flowchart TD
+    n13["13. Measure rotated contention<br/>workloads"]
+    click n13 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-mixed-benchmark" "Open step, techniques, and source" _top
+```
+
+</details>
+
+<a id="flow-workflow-framework-comparison"></a>
+
+<details>
+<summary>Compare frozen framework runs</summary>
+
+The CI workflow builds a frozen baseline and the current source with the same framework benchmark file, then alternates runs. This is a separate measurement path.
+
+```mermaid
+flowchart TD
+    n14["14. Compare framework read-only<br/>snapshots"]
+    click n14 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-framework-readonly" "Open step, techniques, and source" _top
+    n15["15. Build and run frozen source<br/>pair"]
+    click n15 href "https://github.com/STEVVVU/ocaml-transactional-memory#flow-step-frozen-comparison" "Open step, techniques, and source" _top
+    n15 -->|"workflow builds and invokes framework<br/>benchmark sources"| n14
+```
+
+</details>
+
+#### Steps, techniques, and source
+
+These source traces cover the active scope below. They explain implementation behavior; benchmark results and their limits remain in the measurement sections.
+
+<a id="flow-step-bank-adapter"></a>
+
+##### 1. Select a bank backend
+
+**Component.** Bank.create and Bank.transfer. Bank validates nonnegative balances, total overflow, account indexes, and transfer amount. It dispatches each transfer to Kcas, TL2, or a single mutex while preserving the same balance checks.
+
+**Techniques at this step.** [Backend-neutral bank transfer invariant](#technique-shared-bank-invariant) · [Coarse mutex serialization](#technique-coarse-mutex-baseline) · [Descriptor-based multi-word compare-and-set](#technique-kcas-multiword-commit).
+
+**Source.** [`coursework/src/bank.ml:9`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/bank.ml#L9) · [`coursework/src/bank.ml:33`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/bank.ml#L33). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-start"></a>
+
+##### 2. Start a TL2 attempt
+
+**Component.** Tl2.fresh_id and attempt_with_hooks. The attempt allocates a bounded atomic identity and snapshots the global commit clock. Identity contention returns an aborted attempt; identity or version overflow raises its explicit exception.
+
+**Techniques at this step.** [Bounded atomic identity allocation](#technique-bounded-atomic-identities) · [Rollback and bounded retry with backoff](#technique-tl2-rollback-retry).
+
+**Source.** [`coursework/src/tl2.ml:24`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L24) · [`coursework/src/tl2.ml:150`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L150). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-observe"></a>
+
+##### 3. Read versioned cells
+
+**Component.** Tl2.observe, read, and write. The first access records the exact unlocked cell state and value only when its version is no newer than the transaction start. Locked cells, newer versions, or repeated state changes abort; later reads return a staged value when present.
+
+**Techniques at this step.** [Optimistic versioned reads and snapshot validation](#technique-optimistic-versioned-reads) · [Write buffering and read-your-writes](#technique-tl2-write-buffer).
+
+**Source.** [`coursework/src/tl2.ml:36`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L36) · [`coursework/src/tl2.ml:56`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L56) · [`coursework/src/tl2.ml:61`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L61). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-readonly"></a>
+
+##### 4. Validate read-only attempt
+
+**Component.** Tl2.commit. With no writes, commit checks that every observed atomic state is unchanged and returns the function result. A changed observation raises Conflict without acquiring locks or reserving a version.
+
+**Techniques at this step.** [Direct read-only validation](#technique-read-only-fast-path) · [Optimistic versioned reads and snapshot validation](#technique-optimistic-versioned-reads).
+
+**Source.** [`coursework/src/tl2.ml:97`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L97). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-sort-lock"></a>
+
+##### 5. Lock write cells in ID order
+
+**Component.** Tl2.entries and commit. Commit sorts observations by cell ID, filters writes, then compare-and-sets each original state to the transaction owner. A failed CAS aborts; the exception handler releases every lock already acquired.
+
+**Techniques at this step.** [Sorted CAS write locking](#technique-ordered-cas-locking) · [Staged publication and acquired-lock rollback](#technique-tl2-publication-rollback).
+
+**Source.** [`coursework/src/tl2.ml:75`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L75) · [`coursework/src/tl2.ml:97`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L97). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-clock-validate"></a>
+
+##### 6. Reserve version and validate
+
+**Component.** Tl2.next_version and validate. After all locks succeed, commit reserves one global version with bounded CAS retries. It then confirms read-only states are unchanged and write states remain owned; any conflict releases acquired locks, while clock exhaustion raises Version_overflow.
+
+**Techniques at this step.** [Global commit-version reservation](#technique-global-commit-clock) · [Optimistic versioned reads and snapshot validation](#technique-optimistic-versioned-reads) · [Staged publication and acquired-lock rollback](#technique-tl2-publication-rollback).
+
+**Source.** [`coursework/src/tl2.ml:65`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L65) · [`coursework/src/tl2.ml:85`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L85) · [`coursework/src/tl2.ml:97`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L97). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-publish"></a>
+
+##### 7. Publish staged values
+
+**Component.** Tl2.commit. Commit prepares replacement states with the reserved version, runs the prepublication hook, then stores each replacement. An exception before publication restores the acquired cells to their exact prior states; publication itself is a sequence of atomic stores.
+
+**Techniques at this step.** [Write buffering and read-your-writes](#technique-tl2-write-buffer) · [Staged publication and acquired-lock rollback](#technique-tl2-publication-rollback).
+
+**Source.** [`coursework/src/tl2.ml:97`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L97). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-retry"></a>
+
+##### 8. Retry conflicts within the bound
+
+**Component.** Tl2.transact. transact retries aborted conflicts and identity contention, increments a counter, and applies Backoff.once. The final failed attempt raises Retry_limit; exceptions other than those caught by attempt propagate.
+
+**Techniques at this step.** [Rollback and bounded retry with backoff](#technique-tl2-rollback-retry).
+
+**Source.** [`coursework/src/tl2.ml:178`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L178). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-kcas-commit"></a>
+
+##### 9. Commit through inherited Kcas
+
+**Component.** Kcas.Xt.commit. The bank adapter submits both account reads and writes in one Kcas transaction. Kcas commits through its descriptor determination and finishing logic; this is inherited implementation invoked by the coursework adapter.
+
+**Techniques at this step.** [Descriptor-based multi-word compare-and-set](#technique-kcas-multiword-commit).
+
+**Source.** [`coursework/src/bank.ml:43`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/bank.ml#L43) · [`src/kcas/kcas.ml:936`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/src/kcas/kcas.ml#L936). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-mutex-transfer"></a>
+
+##### 10. Serialize transfer with mutex
+
+**Component.** Bank.protect and transfer. The baseline holds one mutex across balance checks and both account updates, and releases it with Fun.protect. Invalid indexes and negative amounts are rejected before dispatch.
+
+**Techniques at this step.** [Coarse mutex serialization](#technique-coarse-mutex-baseline) · [Backend-neutral bank transfer invariant](#technique-shared-bank-invariant).
+
+**Source.** [`coursework/src/bank.ml:29`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/bank.ml#L29) · [`coursework/src/bank.ml:33`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/bank.ml#L33). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-history-oracle"></a>
+
+##### 11. Search for a valid serial history
+
+**Component.** test_tl2.serial_history_exists. The test oracle tries operations whose real-time predecessors have already been placed, applies their recorded transfer outcome to a copied balance array, and checks whether some ordering reaches the observed final state. This is test verification, not production transaction behavior.
+
+**Techniques at this step.** [Real-time-respecting serial-history search](#technique-realtime-serial-history-oracle).
+
+**Source.** [`coursework/test/test_tl2.ml:269`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/test/test_tl2.ml#L269) · [`coursework/test/test_tl2.ml:296`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/test/test_tl2.ml#L296). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-native-verify"></a>
+
+##### 12. Run native bank checks and save verdict
+
+**Component.** stm_verify.run_checks. The verification driver runs transfer rounds across backends/domains, checks conservation and expected transfer outcomes, then writes a result record. Failures remain explicit in the saved verdict.
+
+**Techniques at this step.** [Native-domain verification with durable verdicts](#technique-native-domain-verification).
+
+**Source.** [`coursework/bin/stm_verify.ml:62`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bin/stm_verify.ml#L62) · [`coursework/bin/stm_verify.ml:83`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bin/stm_verify.ml#L83) · [`coursework/bin/stm_verify.ml:27`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bin/stm_verify.ml#L27). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-mixed-benchmark"></a>
+
+##### 13. Measure rotated contention workloads
+
+**Component.** stm_bench.run. The benchmark chooses disjoint, contended, or read-heavy account pairs, synchronizes worker starts with a gate, and rotates backend trials. It records per-trial results; these measurements do not establish general performance guarantees.
+
+**Techniques at this step.** [Controlled disjoint, contended, and read-heavy workloads](#technique-controlled-contention-workloads) · [Synchronized starts and rotated backend trials](#technique-synchronized-rotated-measurement).
+
+**Source.** [`coursework/bench/stm_bench.ml:3`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bench/stm_bench.ml#L3) · [`coursework/bench/stm_bench.ml:72`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bench/stm_bench.ml#L72) · [`coursework/bench/stm_bench.ml:17`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bench/stm_bench.ml#L17). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-framework-readonly"></a>
+
+##### 14. Compare framework read-only snapshots
+
+**Component.** stm_framework.run_read_only. The framework benchmark measures snapshot transactions using matched backend and domain settings. The executable exposes these cases through its benchmark list; it is a separate measurement entrypoint from stm_bench.
+
+**Techniques at this step.** [Framework-driven checked snapshot comparison](#technique-framework-readonly-comparison).
+
+**Source.** [`coursework/bench/stm_framework.ml:4`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bench/stm_framework.ml#L4) · [`coursework/bench/stm_framework.ml:25`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/bench/stm_framework.ml#L25). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-frozen-comparison"></a>
+
+##### 15. Build and run frozen source pair
+
+**Component.** coursework workflow framework comparison. The workflow archives the pinned baseline commit, copies the same benchmark source into both trees, builds each executable, and alternates runs. A trap records exit and cleanup status with environment details; the evidence README documents the acceptance method.
+
+**Techniques at this step.** [Frozen-source matched-fixture comparison](#technique-frozen-source-comparison).
+
+**Source.** [`.github/workflows/coursework.yml:111`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/.github/workflows/coursework.yml#L111) · [`.github/workflows/coursework.yml:14`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/.github/workflows/coursework.yml#L14) · [`docs/evidence/linux-39741981142/README.md:17`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/docs/evidence/linux-39741981142/README.md#L17). [Back to execution flow](#execution-flow).
+
+<a id="flow-step-tl2-failure"></a>
+
+##### 16. Propagate terminal failure
+
+**Component.** transact. Retry_limit ends the bounded retry loop. Identity_overflow, Version_overflow and other non-conflict exceptions propagate to the caller instead of entering that loop.
+
+Explicit operation boundary or terminal error, with no separate ledger technique.
+
+**Source.** [`coursework/src/tl2.ml:178`](https://github.com/STEVVVU/ocaml-transactional-memory/blob/main/coursework/src/tl2.ml#L178). [Back to execution flow](#execution-flow).
+
+<details>
+<summary>Scope and subsystem coverage</summary>
+
+Coursework TL2 transaction and bank adapter paths, inherited Kcas bank commit, mutex baseline, and separate history, native verification, mixed benchmark, and frozen framework comparison workflows.
+
+- **TL2 transaction engine.** The attempt path includes snapshots, write buffering, ordered CAS locks, global version reservation, validation, publication rollback, and bounded retries. [Step 2](#flow-step-tl2-start), [Step 3](#flow-step-tl2-observe), [Step 4](#flow-step-tl2-readonly), [Step 5](#flow-step-tl2-sort-lock), [Step 6](#flow-step-tl2-clock-validate), [Step 7](#flow-step-tl2-publish), [Step 8](#flow-step-tl2-retry), [Step 16](#flow-step-tl2-failure).
+- **Bank backend adapters and baselines.** The bank API preserves a common invariant and dispatches to independent Kcas, TL2, and coarse mutex mechanisms. [Step 1](#flow-step-bank-adapter), [Step 9](#flow-step-kcas-commit), [Step 10](#flow-step-mutex-transfer).
+- **Concurrency and serial-history tests.** The real-time respecting serial-order search is described as a test-only oracle. [Step 11](#flow-step-history-oracle).
+- **Native verification driver.** The driver runs domain checks and emits durable verdict data. [Step 12](#flow-step-native-verify).
+- **Mixed workload benchmark.** Disjoint, contended, and read-heavy workload choices use synchronized rotated trials. [Step 13](#flow-step-mixed-benchmark).
+- **Framework read-only comparison and historical baseline.** The benchmark and frozen-source workflow remain separate from production bank transactions. [Step 14](#flow-step-framework-readonly), [Step 15](#flow-step-frozen-comparison).
+
+Outside this flow audit:
+
+- `src/kcas_data/ and test/kcas_data/`. General-purpose data structures are not called by the coursework bank path.
+- `bench/ and test/ outside coursework/`. These exercise other Kcas examples and are outside the active coursework workflows.
+
+</details>
+
+<!-- execution-flow:end -->
+
+<details>
+<summary>Subsystem technique index</summary>
+
 ### Subsystem map
 
 Select a subsystem in the diagram to open its techniques, tradeoffs, and code references. The numbered links provide the same navigation. This map groups components; the execution diagrams show their runtime flow.
@@ -35,6 +417,8 @@ flowchart LR
 6. [Framework read-only comparison and historical baseline](#subsystem-framework-read-only-comparison-and-historical-baseline)
 
 This checkout combines inherited Kcas and its upstream tests with a separate OCaml 5 coursework experiment. Kcas remains the general-purpose multi-word [STM](#stm). The added [TL2](#tl2) backend supports integer cells and the bank workload; it does not replace or modify Kcas.
+
+</details>
 
 <details>
 <summary>Expand flow diagram 1</summary>
